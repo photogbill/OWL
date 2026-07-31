@@ -1,0 +1,21 @@
+name: tests
+on: [push, pull_request]
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        python: ["3.10", "3.11", "3.12", "3.13"]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python }}
+      - run: pip install -e ".[dev]"
+      # No GPU, no model, no network. If this ever needs one, something is wrong.
+      - run: python -m pytest tests/ -q
+      - run: python -m owl check
+      - run: |
+          python examples/00_tier0_field_notes.py
+          python examples/01_theory_of_mind.py
+          python examples/02_handover.py

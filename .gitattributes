@@ -1,0 +1,12 @@
+# Batch files must keep CRLF. A .bat with bare LF endings fails in
+# confusing ways on Windows (labels, goto and multi-line blocks break).
+*.bat text eol=crlf
+
+*.py   text eol=lf
+*.sql  text eol=lf
+*.md   text eol=lf
+*.toml text eol=lf
+*.yml  text eol=lf
+
+*.gguf binary
+*.owl  binary

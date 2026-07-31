@@ -1,0 +1,22 @@
+# Ignore Model Files and Calibration Data
+*.gguf
+*.owlcal.json
+embedding model/
+"embedding model/"
+
+# Ignore Databases
+*.db
+*.sqlite
+*.db-wal
+*.db-shm
+
+# Ignore Python Environment & Caches
+__pycache__/
+*.pyc
+.venv/
+venv/
+
+# Ignore Logs & IDE files
+*.log
+.vscode/
+.idea/
