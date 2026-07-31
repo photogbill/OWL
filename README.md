@@ -1,20 +1,63 @@
 <div align="center">
 
-# O.W.L.
+# 🦉 O.W.L.
 
-### Observation & Wisdom Ledger
+### Observation &amp; Wisdom Ledger
 
 **A memory engine for LLM agents that can always tell you how it knows.**
 
-```bash
-pip install owl-engine
-```
+[![tests](https://github.com/photogbill/OWL/actions/workflows/test.yml/badge.svg)](https://github.com/photogbill/OWL/actions/workflows/test.yml)
+[![python](https://img.shields.io/badge/python-3.10%20%7C%203.11%20%7C%203.12%20%7C%203.13-blue)](https://www.python.org/downloads/)
+[![dependencies](https://img.shields.io/badge/dependencies-zero-brightgreen)](pyproject.toml)
+[![tests count](https://img.shields.io/badge/tests-465-brightgreen)](tests/)
+[![license](https://img.shields.io/badge/license-MIT-informational)](LICENSE)
+[![status](https://img.shields.io/badge/status-alpha-orange)](#status)
 
-No Docker. No Postgres. No GPU. No model. No dependencies.
-
-[Why](#why-another-memory-library) · [Quick start](#quick-start) · [Ideas](#the-ideas-and-where-they-come-from) · [Comparison](#how-it-compares) · [Status](#status)
+**[Why](#why-another-memory-library)** ·
+**[Quick start](#quick-start)** ·
+**[Install](#install)** ·
+**[Ideas](#the-ideas-and-where-they-come-from)** ·
+**[Comparison](#how-it-compares)** ·
+**[Status](#status)**
 
 </div>
+
+---
+
+```bash
+git clone https://github.com/photogbill/OWL.git
+cd OWL
+install.bat          # Windows.  Linux/macOS: see Install
+```
+
+**No Docker. No Postgres. No GPU. No model. No API key. No dependencies.**
+A store is one file.
+
+---
+
+### The part nobody else does
+
+```python
+route  = mind.observe("Route Alpha is open.", source_ref="sitrep-0800")
+convoy = mind.decided("Route the fuel convoy via Alpha", because=[route])
+
+# ...four hours later, it isn't.
+mind.observe("Route Alpha is closed by flooding.", source_ref="sitrep-1200",
+             supersedes=route)
+
+mind.reconsider()
+# [URGENT] sev=0.71  Route the fuel convoy via Alpha
+#          cause=superseded   still reversible -- act on this
+```
+
+Every memory system can answer *"what do I know about Route Alpha?"*
+OWL answers the question that costs money when nobody asks it:
+
+> **"That turned out to be wrong. What did I do about it, and what do I need to undo?"**
+
+Nothing is deleted to make that work. The old row is still there, still
+retrievable, still marked — which is also why OWL cannot lose the superseded
+wording the way a store that mutates in place does.
 
 ---
 
@@ -30,23 +73,52 @@ OWL is built around one commitment:
 
 ## Install
 
-**As a dependency** — the core has no dependencies at all, on any platform:
+**OWL is not on PyPI.** There is no `pip install owl-engine` — it is installed
+from a clone of this repository. Python 3.10 or newer; nothing else is
+required for Tier 0.
 
-```bash
-pip install owl-engine
-python -m owl check          # what tier can this machine run?
-```
-
-**Standalone, for development and testing (Windows).** Creates an isolated
-`.venv`, picks the right prebuilt `llama-cpp-python` wheel for your hardware,
-and verifies the install:
+### Windows
 
 ```bat
+git clone https://github.com/photogbill/OWL.git
+cd OWL
 install.bat
 ```
 
+`install.bat` creates an isolated `.venv`, installs OWL editable, detects your
+hardware and fetches the matching prebuilt `llama-cpp-python` wheel if there is
+one, then runs the test suite and refuses to report success if it fails.
+
+### Linux / macOS
+
+```bash
+git clone https://github.com/photogbill/OWL.git
+cd OWL
+python3 -m venv .venv
+source .venv/bin/activate
+pip install -e ".[dev]"
+pytest tests -q
+```
+
+### Updating
+
+```bash
+git pull
+```
+
+Then re-run `install.bat` (Windows) or `pip install -e ".[dev]"` (Linux/macOS).
+The install is editable, so a pull is usually enough on its own — re-running
+the installer matters when dependencies or the schema have moved.
+
+**Your stores are safe across an update.** A `.owl` file written by an older
+version is migrated in place the first time it is opened, and the migration is
+reported by `python -m owl doctor mind.owl` rather than done silently. A store
+on read-only media that cannot be migrated stays readable.
+
+### The scripts
+
 | Script | What it does |
-|---|---|
+| --- | --- |
 | `install.bat` | venv + editable install + backend detection + verify |
 | `run_tests.bat` | the correctness suite (extra pytest args pass through) |
 | `demo.bat` | every example, in order |
@@ -55,17 +127,15 @@ install.bat
 | `shell.bat` | a prompt with the venv active |
 | `clean.bat` | remove `.venv` and caches |
 
-All of them are safe to double-click — they detect it and hold the window open
-instead of vanishing.
+All batch files are safe to double-click — they detect interactive execution and hold the window open.
 
-> The installer **never builds `llama-cpp-python` from source** (that needs
-> CMake + VS Build Tools and usually fails). It tries prebuilt wheels for your
-> CUDA version, then CPU, then plain PyPI. If none match it says so and
-> continues — **Tier 0 is complete without it.** Python 3.10–3.12 is the safe
-> range; 3.13+ often has no wheel yet.
+> The installer **never builds `llama-cpp-python` from source** (that needs CMake + VS Build Tools and usually fails). It tries prebuilt wheels for your CUDA version, then CPU, then plain PyPI. If none match it says so and continues — **Tier 0 is complete without it.** Python 3.10–3.12 is the safe range; 3.13+ often has no wheel yet.
 
-On Linux/macOS, `pip install -e ".[dev]" && pytest tests -q` is the whole
-equivalent of `install.bat`.
+**Embedding models are not in the repository.** `*.gguf` is gitignored — they
+are gigabytes. Tier 0 needs none of them. For Tier 1, put a `.gguf` in an
+`embedding model/` folder and run `validate.bat "embedding model\your-model.gguf"`.
+
+---
 
 ## Quick start
 
@@ -91,6 +161,7 @@ match r.state:
 for c in r.chunks:
     print(c.content)
     print(c.provenance.source_ref, c.retrievability, c.staleness)
+
 ```
 
 **Check `.state` before you touch `.chunks`.** Six states, not two. It's the whole design in one line — most memory libraries make "I have nothing" indistinguishable from "here are five bad matches."
@@ -108,6 +179,7 @@ Two rules, checked on every write and fuzz-tested in CI:
 ```
 confidence(node)  <=  min(confidence(parents))
 epistemic(node)   >=  max(epistemic(parents))
+
 ```
 
 A node derived from a hypothesis is **permanently** a hypothesis. Abstraction cannot launder speculation into fact. There is no argument that gets you around it, including from the library's own author — the append-only trigger caught me putting suppression state on the evidence table during development.
@@ -119,6 +191,7 @@ for node in mind.why(some_conclusion):
 # *NOT FACT* [hypothesized] conf=0.70  The clinic can sustain two weeks...
 # *NOT FACT* [inferred    ] conf=0.90  Fuel resupply is currently viable.
 # FACT       [observed    ] conf=1.00  Route Alpha is open as of this morning.
+
 ```
 
 ### 2. Findable and still-true are different questions
@@ -130,6 +203,7 @@ Everyone decays *retrievability* — can I still find this? Nobody decays *credi
 ```
 TRUST  identity   findable=0.63  stale=0.00   Dr Warsame runs the clinic...
 STALE  status     findable=0.63  stale=0.99   Route Alpha is open.
+
 ```
 
 ### 3. It models what *you* know, not just what it knows
@@ -143,12 +217,14 @@ mind.tell("bill", node_id, channel="briefing")   # they were exposed
 mind.knows("bill", node_id).retrievability       # do they still hold it?
 mind.at_risk("bill")                             # what they're about to lose
 mind.divergence("bill")                          # what they believe that's now false
+
 ```
 
 ```
 day 21  checkpoint protocol (skimmed)    retention=0.27   <- AT RISK
 day 21  route status (discussed)         retention=0.63
 day 21  Dr Warsame (they said it)        retention=0.87
+
 ```
 
 The system still holds all three perfectly. That gap is the point.
@@ -162,6 +238,7 @@ Information flow is **denied by default, directional, and non-transitive**:
 ```python
 mind.partition("work")
 mind.partition("private", sealed=True, summary_reads_from=["work"])
+
 ```
 
 A one-way membrane. `private` sees what the day held — at the level of summaries, not raw detail — and nothing in it can ever surface in `work`, or be exported, ever. Enforced in SQL, so a future refactor can't quietly break it.
@@ -174,6 +251,7 @@ rows read           4        4        4        4        4   partition-sharded
                    29      104      404     1604     4004   scoped after the scan
 latency          2.87     1.50     1.69     2.33     2.15   ms, sharded
                  2.98     1.48     1.98     4.61     7.94   ms, unsharded
+
 ```
 
 This is a confidentiality property before it is a performance one. A private partition's entire justification is being separate; making its response time a function of the work partition's size publishes the work partition's size into it. A boundary that holds for content and leaks through timing is a boundary with a side channel.
@@ -185,7 +263,7 @@ Import a Mem0 or A-MEM store and you inherit the previous operator's inferences 
 OWL's monotonicity lattice makes the transplant rule one line — **every epistemic tag shifts down one rank**:
 
 | Theirs | Becomes yours |
-|---|---|
+| --- | --- |
 | `observed` | `reported` — you didn't see it; they did |
 | `inferred` | `hypothesized` — their conclusion is your guess |
 | `hypothesized` | *dropped* — their guess is nothing to you |
@@ -195,6 +273,7 @@ You also inherit their **failed searches** (no re-canvassing six vendors), their
 ```python
 mind.inspect_pack("bardera.owlpack")               # dry run first
 mind.graft("bardera.owlpack", as_source="prev:ferrand")
+
 ```
 
 Packs are plain JSON, checksummed, and refuse to load if modified. Sealed partitions never export. Suppressed and affect-marked material never travels.
@@ -216,6 +295,7 @@ mind.observe("Route Alpha is closed by flooding.", source_ref="sitrep-2",
 mind.reconsider()
 # [URGENT] sev=0.71  Route the fuel convoy via Alpha
 #          cause=superseded   still reversible -- act on this
+
 ```
 
 Executed decisions surface too, but never as urgent — *"the convoy already crossed the bridge that has since collapsed"* is what after-action review needs. Log it; don't alarm about something nobody can change.
@@ -226,6 +306,7 @@ And the inverse of `why()`:
 mind.discredit(survey_pdf, reason="three years out of date", reliability="E")
 # demotes every conclusion downstream, flags every decision that rested on it,
 # and tells you who you told — without deleting anything
+
 ```
 
 `blast_radius()` answers the question no other memory system can:
@@ -237,6 +318,7 @@ mind.discredit(survey_pdf, reason="three years out of date", reliability="E")
 ```
 priority=0.960 crit=1.00 deps=2 decisions=1 grade=E/5   Depot holds 4000 litres...
 priority=0.473 crit=0.82 deps=1 decisions=1 grade=C/3   Route Alpha is open.
+
 ```
 
 ### 7. Trust is learned, and it flows backwards
@@ -247,6 +329,7 @@ Corroboration everywhere else counts **documents**. It should count **independen
 20 documents asserting the same thing
    independent origins : 1
    corroboration weight: 0.0    single origin -- no corroboration credit
+
 ```
 
 And the claim is separate from the person making it — the *de dicto / de re* distinction that intelligence tradecraft has treated as basic for a century, and that no LLM memory system implements:
@@ -255,6 +338,7 @@ And the claim is separate from the person making it — the *de dicto / de re* d
 mind.claimed("Ahmed", "the depot restocks every Tuesday", node_id=n)
 mind.who_claims("the depot restocks every Tuesday")   # who else says this?
 mind.record_of("Ahmed")                               # learned from outcomes
+
 ```
 
 **Promises are not facts.** They have a lifecycle — made → due → kept or broken — and the outcome closes a loop nobody closes:
@@ -264,6 +348,7 @@ cm = mind.committed("Ahmed", "deliver fuel", due=thursday, node_id=n)
 mind.resolve_commitment(cm, kept=False)
 # Ahmed: 17% accurate over 4 resolved (4 promises broken) -> grade E
 # ...and every source he spoke through is revalued automatically: B/2 -> E/5
+
 ```
 
 An unrated source is graded `F` — *"cannot be judged"*, which is mid-scale, not low. Treating an unknown source as unreliable is as wrong as trusting it. And a perfect record has to be *long* before it earns grade A: five kept promises is a good sign, not a certification.
@@ -272,11 +357,11 @@ An unrated source is graded `F` — *"cannot be judged"*, which is mid-scale, no
 
 A memory system is a persistence layer for beliefs. Prompt injection is transient; **memory poisoning survives every restart**, propagates into every derived summary, and is retrieved as context forever.
 
-- Injected content is **quarantined, not refused** — the attempt itself is evidence. It stays retrievable and is never authoritative, never corroborates, never fuses.
-- A grade-F source **cannot overwrite** a grade-B one. It registers a *conflict* instead, because disagreement is information.
-- One source rapidly superseding many established claims is a **belief coup** — held for review.
-- **Model provenance** on every inference: when you upgrade from a 7B to a 24B, every conclusion resting on the smaller model's judgement is identifiable.
-- **`self_audit()`** attacks OWL's own invariants in the live store. CI proves they hold at commit; this proves they still hold after months of writes.
+* Injected content is **quarantined, not refused** — the attempt itself is evidence. It stays retrievable and is never authoritative, never corroborates, never fuses.
+* A grade-F source **cannot overwrite** a grade-B one. It registers a *conflict* instead, because disagreement is information.
+* One source rapidly superseding many established claims is a **belief coup** — held for review.
+* **Model provenance** on every inference: when you upgrade from a 7B to a 24B, every conclusion resting on the smaller model's judgement is identifiable.
+* **`self_audit()`** attacks OWL's own invariants in the live store. CI proves they hold at commit; this proves they still hold after months of writes.
 
 ### 9. Quantities are values, not substrings
 
@@ -291,6 +376,7 @@ mind.derive("Depot holds 4000.", parents=[n], kind="summary", ...)
 
 mind.derive("Give 250 g every six hours.", parents=[dosage], ...)
 # OwlError: 250 mg became 250 g - value changed
+
 ```
 
 Abstraction is still allowed — *"depot holds 4000 litres"* → *"fuel is not a
@@ -304,6 +390,7 @@ because it converts.
 Q: who is the depot fuel supplier
    DONT_KNOW -- To answer this I would need a source naming the person
    'depot fuel supplier' - nothing in the store mentions it.
+
 ```
 
 `DONT_KNOW` states *what would have to exist*, typed by the question, so the
@@ -317,6 +404,7 @@ mind.failed("route the convoy via Km-58",
 
 mind.prior_failures("should we route the convoy via Km-58?")
 # [{'reason': 'impassable after rain; lost a truck', 'days_ago': 20.0, ...}]
+
 ```
 
 ### 11. Memory is an investment, not storage
@@ -329,6 +417,7 @@ at a filename.
 ```python
 mind.observe("Only vendor stocking diesel is in Kismayo, three days away.",
              source_ref="canvass", acquisition_cost=1.0)
+
 ```
 
 Load-bearing criticality feeds the same score: a memory nothing depends on is
@@ -342,6 +431,7 @@ fraction of conversational memory looks exactly like that.
 ```
 He said it would arrive Thursday.
   -> Ahmed said the gasket would arrive Thursday (2023-11-16).
+
 ```
 
 Two rules shape it. The expansion is a **derived node** — the raw utterance is
@@ -350,6 +440,7 @@ evidence and is never rewritten. And ambiguity is **refused, not guessed**:
 ```
 He told her about it.        [Ahmed, Fatima both present]
   -> unchanged, unresolved: ['He', 'her', 'it']
+
 ```
 
 A wrong substitution is invisible to the reader; an unresolved pronoun is not.
@@ -364,6 +455,7 @@ rule that silently shrinks answers is worse than no rule.
 ```python
 mind.recall("depot diesel", budget=4, group_by="source", per_group=2)
 mind.recall("depot diesel", token_budget=400)   # measured, not guessed
+
 ```
 
 ### 14. Discrimination by margin, not by threshold
@@ -373,6 +465,7 @@ Measured on BGE-M3 against a small field corpus, the two bands **overlap**:
 ```
 related cosines      0.426 .. 0.691
 unrelated cosines    0.213 .. 0.514
+
 ```
 
 No single threshold separates them. Setting it high discards true matches;
@@ -382,6 +475,7 @@ whether the best match **rises above its background**:
 ```
 "how is the health facility powered"   best 0.69, rest ~0.35   -> real
 "what is the helicopter tail number"   best 0.51, rest ~0.45   -> noise
+
 ```
 
 A real match stands out from the pack; an accidental one sits in it. That is
@@ -395,6 +489,7 @@ Measured on BGE-M3 over a 22-document corpus, the *margins* overlap too:
 ```
 related margins    0.067  0.166  0.304  0.306
 unrelated margins         0.106  0.142  0.198
+
 ```
 
 Two genuinely related probes sit below the worst unrelated one. No parameter
@@ -420,31 +515,34 @@ to earn its place rather than be asserted.
 
 Standard RAG embeds everything into a single space, where similar items collapse together — which *causes* the interference problem it then works around. OWL follows Complementary Learning Systems and makes the write path do the opposite of the read path:
 
-- **WRITE — pattern separation.** The vector is mostly meaning plus a deliberate context component (partition, period, episode, source, day), concatenated structurally. Two structurally identical weekly meetings land *apart*.
-- **READ — pattern completion.** Bare semantic content, because a query arrives with none of that context. Retrieve a neighbourhood, then discriminate.
+* **WRITE — pattern separation.** The vector is mostly meaning plus a deliberate context component (partition, period, episode, source, day), concatenated structurally. Two structurally identical weekly meetings land *apart*.
+* **READ — pattern completion.** Bare semantic content, because a query arrives with none of that context. Retrieve a neighbourhood, then discriminate.
 
 ```
 identical text, different weeks:
   READ  space similarity = 1.000   (meaning: same)
   WRITE space similarity = 0.817   (episodes: distinct)
+
 ```
 
 Note this is done by concatenation, not by prepending `[week2]` to the text and hoping a mean-pooled encoder notices. That's a wish, not a mechanism.
 
 Fusion of lexical and semantic scores is **max-of-normalised, not a weighted sum** — either signal firing hard is good evidence, and averaging them down to mediocre is exactly wrong. It also keeps exact-identifier recall, which is where embeddings are weakest: no model reliably separates serial `GX-4419` from `GX-4491`.
 
-### 7. Air-gapped by default, and it grows with you
+### 16. Air-gapped by default, and it grows with you
 
 ```bash
-pip install owl-engine            # Tier 0 — everything above. stdlib only.
-pip install owl-engine[embed]     # Tier 1 — + semantic recall (ONNX)
-pip install owl-engine[llama]     # Tier 2 — + reconstructive compression
+pip install -e .              # Tier 0 — everything above. stdlib only.
+pip install -e ".[embed]"     # Tier 1 — + semantic recall (ONNX)
+pip install -e ".[llama]"     # Tier 2 — + reconstructive compression
+
 ```
 
 **OWL never downloads anything.** The ONNX adapter takes a path to a model you placed yourself; fetching one is a separate, explicit, opt-in command you run on a networked machine:
 
 ```bash
 python -m owl.adapters.fetch_model --out models/all-MiniLM-L6-v2
+
 ```
 
 A library that quietly reaches for the network the first time it's asked a question is unusable in the environments this is built for. If you already have a `sentence-transformers` model loaded, `STEmbedder` wraps it in about five lines rather than paying for a second model in RAM.
@@ -460,7 +558,7 @@ The hashing fallback is deliberately **not** counted as Tier 1: a fallback that 
 OWL is mostly not novel research. It's an attempt to take findings that are decades old and well-replicated, and actually implement them.
 
 | Mechanism | Grounding |
-|---|---|
+| --- | --- |
 | Substrate / index / derivation split | Bjork & Bjork's New Theory of Disuse — storage strength never decreases; retrieval strength does |
 | Power-law forgetting, spacing effect | FSRS (DSR model); Wixted & Ebbesen 1991 |
 | Feeling-of-Knowing gate | Koriat's metamemory work — triage is fast and separate from retrieval |
@@ -482,7 +580,7 @@ Where the biology and the engineering disagree, the engineering wins. Human memo
 ## How it compares
 
 |  | Typical agent memory | OWL |
-|---|---|---|
+| --- | --- | --- |
 | Forgetting | delete rows, or never | decay the **index**; the record is immutable |
 | Summarisation | on a timer | only what it can **prove** it can reconstruct *(Tier 2)* |
 | "I don't know" | indistinguishable from bad matches | first-class, ~0.1 ms, no model call |
@@ -491,7 +589,7 @@ Where the biology and the engineering disagree, the engineering wins. Human memo
 | The user's knowledge | not modelled | forgetting curve + false-belief detection |
 | Confidentiality | application convention | enforced in the store |
 | Import someone else's memory | inherit their guesses as facts | automatic epistemic demotion |
-| Install | Docker + Postgres + a model | `pip install owl-engine` |
+| Install | Docker + Postgres + a model | `git clone` + `install.bat` |
 
 OWL is a **component**, not an agent runtime. If you want tools, channels, identity, and a heartbeat, look at [Hexis](https://github.com/QuixiAI/Hexis) or [Letta](https://github.com/letta-ai/letta) — you could sensibly run OWL inside either.
 
@@ -506,13 +604,14 @@ python examples/02_handover.py             # export, dry run, graft, demotion
 python examples/03_semantic.py             # paraphrase gap, two spaces, growing into Tier 1
 python examples/04_forward_direction.py    # decisions, blast radius, triage, poisoning defence
 python examples/05_trust_loop.py           # source independence, attributed belief, commitments
+
 ```
 
 ---
 
 ## Status
 
-**Alpha, and honest about it.** 464 tests, ~20 seconds, no GPU, no network, no dependencies.
+**Alpha, and honest about it.** 465 tests, ~20 seconds, no GPU, no network, no dependencies.
 
 **Working now** — provenance and the monotonicity invariant · FSRS salience · six-state FOK triage · event segmentation · interference detection and record fusion · information-flow partitions · bitemporal recall · epistemic half-life · verbatim protection · transactive memory and false-belief detection · negative memory · handover packs · prospective memory · heterogeneous entity graph · two-space semantic recall · decision–consequence graph · blast radius and retroactive revaluation · load-bearing criticality · retrieval receipts · poisoning defence · adversarial self-audit · source independence · attributed belief · commitment lifecycle · **ambient operation: non-blocking capture, read-only recall, session prefix, anticipatory retrieval, named diagnostics, reviewable handover, multi-operator convergence** · **partition-sharded storage**.
 
@@ -522,9 +621,13 @@ and a memory captured-but-not-embedded reports as `provisional` rather than
 absent, since "not yet" and "not there" are different claims. Recall runs
 against a store opened read-only, on read-only media, or while another
 process writes; where it can't reinforce what it returned it says so in
-`Recall.degraded`, alongside "no embedder" and "embedder raised". Seventeen
-named checks (`python -m owl doctor --json`) each carry a remedy, and every
-one has a test that drives it red. `prefix()` puts consequence in front of a
+`Recall.degraded`, alongside "no embedder" and "embedder raised". Twenty-two
+named checks (`python -m owl doctor mind.owl --json`) each carry a remedy,
+and seventeen have a test that drives them red — the remaining five
+(`epistemics.monotonic`, `defence.self_audit`,
+`defence.quarantine_reviewed`, `decisions.impacts_acknowledged`,
+`store.liveness`) are asserted only in the green direction and are the next
+gap to close. `prefix()` puts consequence in front of a
 session — shifted decisions before due commitments before open loops — under
 a hard token budget, dropping whole tiers rather than truncating. `watch()`
 is anticipatory retrieval that ships **off**, with a session cap, a cooldown,
@@ -538,8 +641,7 @@ engine has the same failure mode — *a wrong answer delivered faster* — and
 that is invisible, so each ships with a test that pins the behaviour before
 the speed. A vocabulary filter answers `DONT_KNOW` without touching SQLite;
 vectors are a view over the stored buffer rather than a per-query
-deserialise; recall is cached on `(query, partition, clock bucket, write
-generation)` and **any** write invalidates **everything**, because working
+deserialise; recall is cached on `(query, partition, clock bucket, write generation)` and **any** write invalidates **everything**, because working
 out which cached queries a write could have affected is where cache bugs
 live and a stale answer looks exactly like a fresh one. `tend()` scopes to
 what changed, with a periodic full sweep regardless — a dirty-set bug loses
@@ -550,22 +652,22 @@ not the table.
 Building these found four real bugs, and the two worth naming were both
 invisible:
 
-- **The vocabulary filter went stale and lost memories.** It was built once
-  on first recall and never updated, reasoning that adding a term only
-  moves a Bloom filter towards "possibly present" — the safe direction.
-  True of adding to the *filter*; the code added to the *store* and not the
-  filter, which is the other direction. Every term written after the first
-  recall read as definitely absent, so the posting scan was skipped and a
-  memory the store held came back `DONT_KNOW`. No embedder needed to
-  reproduce, nothing raised, indistinguishable from ordinary forgetting.
-- **Ranking depended on which index SQLite chose.** Candidates tied on
-  score were left in whatever order rows arrived in. Adding the shard index
-  changed the plan and the returned chunks reordered with every score
-  identical. Ties now break on content — the only tiebreak available that
-  is derived from the memory rather than from the store. `observed_at` was
-  tried first and is wall-clock, so two memories written in the same loop
-  tie in one run and not the next; the same test caught that one round
-  later, which is the argument for the test.
+* **The vocabulary filter went stale and lost memories.** It was built once
+on first recall and never updated, reasoning that adding a term only
+moves a Bloom filter towards "possibly present" — the safe direction.
+True of adding to the *filter*; the code added to the *store* and not the
+filter, which is the other direction. Every term written after the first
+recall read as definitely absent, so the posting scan was skipped and a
+memory the store held came back `DONT_KNOW`. No embedder needed to
+reproduce, nothing raised, indistinguishable from ordinary forgetting.
+* **Ranking depended on which index SQLite chose.** Candidates tied on
+score were left in whatever order rows arrived in. Adding the shard index
+changed the plan and the returned chunks reordered with every score
+identical. Ties now break on content — the only tiebreak available that
+is derived from the memory rather than from the store. `observed_at` was
+tried first and is wall-clock, so two memories written in the same loop
+tie in one run and not the next; the same test caught that one round
+later, which is the argument for the test.
 
 **Not yet** — encryption at rest · time-travel replay · jointly-edited ledger · external benchmarks (LoCoMo, LongMemEval, HaluMem).
 
@@ -580,8 +682,8 @@ conventions** rather than assuming one family's. Embedding models do not agree
 on pooling or query instructions, and getting it wrong is *silent* — the
 vectors come back the right shape and retrieval is merely bad:
 
-| | pooling | query instruction |
-|---|---|---|
+|  | pooling | query instruction |
+| --- | --- | --- |
 | `bge-m3` | CLS | none |
 | `Qwen3-Embedding` | **last** | **required** |
 | `bge-*-en` | CLS | "Represent this sentence…" |
@@ -599,6 +701,7 @@ corpus:
 ```
 bge-m3      related 0.426-0.691   unrelated 0.415-0.490   bands OVERLAP  -> margin carries
 Qwen3-8B    related 0.360-0.531   unrelated 0.275-0.353   bands SEPARATE -> level carries
+
 ```
 
 The absolute scale moves too. A `noise_floor` of 0.40 is reasonable for the
@@ -607,6 +710,7 @@ memories silently discarded, nothing erroring.
 
 ```bat
 validate.bat "model.gguf" --calibrate
+
 ```
 
 measures both bands and writes `model.gguf.owlcal.json` next to the model. The
@@ -621,6 +725,7 @@ only, which displaces query vectors relative to document vectors:
 ```
 query -> doc, unrelated   mean 0.216   p95 0.333    <- the recall gate's zero
 doc   -> doc, unrelated   mean 0.406   p95 0.529    <- fusion's zero
+
 ```
 
 Judging the first against the second is a category error that cost a round of
@@ -636,6 +741,7 @@ weak probe becomes a verdict on the whole encoder. AUC uses every comparison:
 ```
 usable headroom    +0.027   (worst case, n=4)
 separability AUC    0.993   (all 600 comparisons)
+
 ```
 
 Both are true. Only the second is a judgement about the model. Nothing else in
@@ -664,6 +770,7 @@ SUBSTRATE
                                        (uncalibrated: 153)
 TEMPORAL
   Staleness accuracy           1.000   volatile flagged, durable not
+
 ```
 
 The flagship pair belongs together. iai-pme reports **Rescue@10 = 1.000** and
@@ -686,6 +793,7 @@ cross-lingual        French and Spanish queries hit their English targets
 engine faithful      4/4    OWL returned what the encoder ranked
 encoder top-1        2/4    BGE-M3's own judgement, not OWL's
 throughput           46 ms/text on CPU
+
 ```
 
 That last pair is the honest bit. On two probes the **encoder itself** ranks a
@@ -715,7 +823,7 @@ The ten lines the codebase is held to:
 11. Provenance points backwards; decisions point forwards. Build both.
 12. Quarantine, never refuse — a blocked write is evidence of an attack.
 
-And two the code enforces mechanically: **nothing calls `time.time()`** (the clock is injected, so a 400-day forgetting curve tests in milliseconds), and **nothing writes to the database except the single writer**.
+And two the code enforces mechanically: **nothing calls `time.time()**` (the clock is injected, so a 400-day forgetting curve tests in milliseconds), and **nothing writes to the database except the single writer**.
 
 ---
 
@@ -723,11 +831,11 @@ And two the code enforces mechanically: **nothing calls `time.time()`** (the clo
 
 Useful and self-contained, roughly in order:
 
-- **A `Reasoner` adapter** — llama.cpp with GBNF grammars, or any OpenAI-compatible endpoint. Unlocks Tier 2.
-- **An ANN index** behind `VectorIndex` — the only place that knows how similarity is computed.
-- **Benchmark harness** for LoCoMo / LongMemEval.
-- **A Postgres `Store`** — the protocol is small and SQLite-specific SQL is confined to one file.
-- **Adversarial tests.** If you can make it assert something it was never told, that's the most valuable issue you can file.
+* **A `Reasoner` adapter** — llama.cpp with GBNF grammars, or any OpenAI-compatible endpoint. Unlocks Tier 2.
+* **An ANN index** behind `VectorIndex` — the only place that knows how similarity is computed.
+* **Benchmark harness** for LoCoMo / LongMemEval.
+* **A Postgres `Store**` — the protocol is small and SQLite-specific SQL is confined to one file.
+* **Adversarial tests.** If you can make it assert something it was never told, that's the most valuable issue you can file.
 
 Correctness tests must stay **fast, and green without a GPU or the network**. A memory system whose correctness suite doesn't get run is one that corrupts itself quietly for six months.
 
@@ -741,8 +849,4 @@ If not, it belongs in the host application. OWL is deliberately not an agent fra
 
 ---
 
-<div align="center">
-
 MIT · built for offline, air-gapped, and low-resource environments where being wrong has a cost
-
-</div>
