@@ -4,6 +4,15 @@ jobs:
   test:
     runs-on: ubuntu-latest
     strategy:
+      # Run all four to completion. On the default (fail-fast: true) the
+      # first job to fail cancels the rest, so the report reads "3.12
+      # failed, three cancelled" whether the cause is specific to 3.12 or
+      # hits every version identically -- and those have completely
+      # different fixes. That ambiguity cost a debugging round on a failure
+      # that turned out to be environmental: a test pointing at a fixture
+      # matched by .gitignore, which could never pass on ANY runner.
+      # Seeing all four fail the same way says so immediately.
+      fail-fast: false
       matrix:
         python: ["3.10", "3.11", "3.12", "3.13"]
     steps:
@@ -13,9 +22,16 @@ jobs:
           python-version: ${{ matrix.python }}
       - run: pip install -e ".[dev]"
       # No GPU, no model, no network. If this ever needs one, something is wrong.
+      # No `embedding model/` either: *.gguf is gitignored, so anything that
+      # needs a real encoder must SKIP here rather than fail.
       - run: python -m pytest tests/ -q
       - run: python -m owl check
+      # Every example, not the first three -- 03/04/05 were never covered,
+      # and an example that stops working is a broken front door.
       - run: |
           python examples/00_tier0_field_notes.py
           python examples/01_theory_of_mind.py
           python examples/02_handover.py
+          python examples/03_semantic.py
+          python examples/04_forward_direction.py
+          python examples/05_trust_loop.py

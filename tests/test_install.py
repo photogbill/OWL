@@ -43,16 +43,34 @@ def test_preflight_reports_tier_and_venv_state():
     assert "SYSTEM PYTHON" in r.stdout or "[venv]" in r.stdout
 
 
-def test_validator_blocks_helpfully_without_the_backend():
+def test_validator_blocks_helpfully_without_the_backend(tmp_path):
     """The failure the user actually hit: a raw ImportError traceback.
 
     Missing backend and failed model load have completely different fixes;
     collapsing them into one exception is what produced the bad experience.
+
+    The file has to EXIST for this to test what it claims. `main()` checks
+    the path before the backend -- deliberately, so that the two stay
+    distinguishable -- so pointing this at a missing file measures the
+    path check and never reaches the backend check at all.
+
+    It used to point at "embedding model/bge-m3-Q6_K.gguf", which is
+    matched by TWO .gitignore rules (`*.gguf` and `embedding model/`) and
+    is therefore never in a clone. So this test passed on exactly one
+    machine -- the one with the model already sitting in the working tree
+    -- and failed on every CI runner and every fresh checkout, asserting
+    exit 3 against the 2 it actually got. A test whose fixture cannot be
+    checked out is a test that only ever ran locally.
+
+    A byte of a file is enough: the run stops at the backend check long
+    before anything tries to parse it.
     """
     from owl.adapters import gguf_embed
     if gguf_embed.available():
         return                                    # nothing to assert here
-    r = _run("bench/validate_embedder.py", "embedding model/bge-m3-Q6_K.gguf")
+    stand_in = tmp_path / "not-really-a-model.gguf"
+    stand_in.write_bytes(b"\0")
+    r = _run("bench/validate_embedder.py", str(stand_in))
     assert r.returncode == 3, "missing backend needs its own exit code"
     assert "BLOCKED" in r.stdout
     assert "install" in r.stdout.lower()

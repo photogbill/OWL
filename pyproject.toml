@@ -31,7 +31,7 @@ dev    = ["pytest>=8", "hypothesis>=6"]
 owl = "owl.__main__:main"
 
 [project.urls]
-Homepage = "https://github.com/photogbill/owl-engine"
+Homepage = "https://github.com/photogbill/OWL"
 
 [tool.hatch.build.targets.wheel]
 packages = ["owl"]
