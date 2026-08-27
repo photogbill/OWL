@@ -1,0 +1,44 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "owl-engine"
+version = "0.1.0"
+description = "Observation & Wisdom Ledger — a provenance-first memory engine for LLM agents. Zero dependencies."
+readme = "README.md"
+requires-python = ">=3.10"
+license = { text = "MIT" }
+authors = [{ name = "William R. Duncan" }]
+keywords = ["memory", "agent", "llm", "provenance", "rag", "cognitive-architecture"]
+classifiers = [
+  "Development Status :: 3 - Alpha",
+  "Intended Audience :: Developers",
+  "License :: OSI Approved :: MIT License",
+  "Programming Language :: Python :: 3.10",
+  "Topic :: Scientific/Engineering :: Artificial Intelligence",
+]
+dependencies = []          # Tier 0 is stdlib-only. This is deliberate.
+
+[project.optional-dependencies]
+embed  = ["onnxruntime>=1.17", "tokenizers>=0.15", "numpy>=1.24"]
+llama  = ["llama-cpp-python>=0.3", "numpy>=1.24"]   # GGUF embedder + reasoner
+fetch  = ["huggingface_hub>=0.20"]
+openai = ["httpx>=0.27"]
+dev    = ["pytest>=8", "hypothesis>=6"]
+
+[project.scripts]
+owl = "owl.__main__:main"
+
+[project.urls]
+Homepage = "https://github.com/photogbill/owl-engine"
+
+[tool.hatch.build.targets.wheel]
+packages = ["owl"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-q"
+markers = [
+  "slow: spawns a subprocess (tooling smoke tests, not engine correctness)",
+]
