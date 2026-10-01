@@ -9,7 +9,7 @@
 [![tests](https://github.com/photogbill/OWL/actions/workflows/test.yml/badge.svg)](https://github.com/photogbill/OWL/actions/workflows/test.yml)
 [![python](https://img.shields.io/badge/python-3.10%20%7C%203.11%20%7C%203.12%20%7C%203.13-blue)](https://www.python.org/downloads/)
 [![dependencies](https://img.shields.io/badge/dependencies-zero-brightgreen)](pyproject.toml)
-[![tests count](https://img.shields.io/badge/tests-465-brightgreen)](tests/)
+[![tests count](https://img.shields.io/badge/tests-509-brightgreen)](tests/)
 [![license](https://img.shields.io/badge/license-MIT-informational)](LICENSE)
 [![status](https://img.shields.io/badge/status-alpha-orange)](#status)
 
@@ -611,9 +611,9 @@ python examples/05_trust_loop.py           # source independence, attributed bel
 
 ## Status
 
-**Alpha, and honest about it.** 465 tests, ~20 seconds, no GPU, no network, no dependencies.
+**Alpha, and honest about it.** 509 tests, ~20 seconds, no GPU, no network, no dependencies.
 
-**Working now** — provenance and the monotonicity invariant · FSRS salience · six-state FOK triage · event segmentation · interference detection and record fusion · information-flow partitions · bitemporal recall · epistemic half-life · verbatim protection · transactive memory and false-belief detection · negative memory · handover packs · prospective memory · heterogeneous entity graph · two-space semantic recall · decision–consequence graph · blast radius and retroactive revaluation · load-bearing criticality · retrieval receipts · poisoning defence · adversarial self-audit · source independence · attributed belief · commitment lifecycle · **ambient operation: non-blocking capture, read-only recall, session prefix, anticipatory retrieval, named diagnostics, reviewable handover, multi-operator convergence** · **partition-sharded storage**.
+**Working now** — provenance and the monotonicity invariant · FSRS salience · six-state FOK triage · event segmentation · interference detection and record fusion · information-flow partitions · bitemporal recall · epistemic half-life · verbatim protection · transactive memory and false-belief detection · negative memory · handover packs · prospective memory · heterogeneous entity graph · two-space semantic recall · decision–consequence graph · blast radius and retroactive revaluation · load-bearing criticality · retrieval receipts · poisoning defence · adversarial self-audit · source independence · attributed belief · commitment lifecycle · **cross-lingual claim identity** · **ambient operation: non-blocking capture, read-only recall, session prefix, anticipatory retrieval, named diagnostics, reviewable handover, multi-operator convergence** · **partition-sharded storage**.
 
 **Ambient operation, in one paragraph.** Capture is 2 ms with an 8B encoder
 attached (`defer_embedding=True`) because embedding moved off the hot path —
@@ -623,11 +623,8 @@ against a store opened read-only, on read-only media, or while another
 process writes; where it can't reinforce what it returned it says so in
 `Recall.degraded`, alongside "no embedder" and "embedder raised". Twenty-two
 named checks (`python -m owl doctor mind.owl --json`) each carry a remedy,
-and seventeen have a test that drives them red — the remaining five
-(`epistemics.monotonic`, `defence.self_audit`,
-`defence.quarantine_reviewed`, `decisions.impacts_acknowledged`,
-`store.liveness`) are asserted only in the green direction and are the next
-gap to close. `prefix()` puts consequence in front of a
+and every one has a test that drives it red against a real store state —
+a check that cannot go red is documentation pretending to be diagnosis. `prefix()` puts consequence in front of a
 session — shifted decisions before due commitments before open loops — under
 a hard token budget, dropping whole tiers rather than truncating. `watch()`
 is anticipatory retrieval that ships **off**, with a session cap, a cooldown,
@@ -669,7 +666,55 @@ tried first and is wall-clock, so two memories written in the same loop
 tie in one run and not the next; the same test caught that one round
 later, which is the argument for the test.
 
-**Not yet** — encryption at rest · time-travel replay · jointly-edited ledger · external benchmarks (LoCoMo, LongMemEval, HaluMem).
+**Also working** — encryption at rest (`Owl.sealed`, AES-256-GCM, the
+`crypto` extra) · time-travel replay (`replay()`, from retrieval receipts) ·
+the jointly-edited ledger (`ledger()` / `correct()`, an edit recorded as
+`user_correction`).
+
+**Not yet** — external benchmarks (LoCoMo, LongMemEval, HaluMem). The local
+epistemic scoreboard in `bench/scoreboard.py` is not a substitute for them.
+
+**Cross-lingual claim identity.** A memory recorded in Somali is evidence;
+its English translation is a *reading* of it. `translation(original, text,
+lang=…)` stores the translation as a derived node whose only parent is the
+original, so it can never outrank it, `why()` always reaches it, and a
+translation that turns "250 mg" into "250 g" is refused by the same
+dimensional-integrity check that guards summaries. `corroborated()` follows a
+translation back to its original: a report and its own translation are **one**
+source, while the same claim from an independent report in another language
+is two. Every node can carry a language tag (`observe(…, lang="so")`), and
+unknown is not English. Handover packs carry the tags under their own
+checksum, so an older engine still verifies a newer pack. Unit *words* are
+read in English only: into another language the check becomes "every figure
+survives" ("4000 litres" → "4000 litir" passes, "400 litir" does not), and
+from another language only abbreviations (mg, kg, l, MHz) are seen.
+
+**The sealed store lost its session, and the test only failed sometimes.**
+`close()` stopped the writer but never closed the per-thread reader
+connections, and in WAL mode SQLite folds the write-ahead log back into the
+main file only when the *last* connection closes. A reader lives as long as
+the `Owl` object is referenced, so a session's writes stayed in `-wal`:
+`Owl.sealed()` then encrypted the main file **without** them and shredded it,
+leaving the plaintext `-wal` beside the ciphertext. Whether a test noticed
+depended on when the garbage collector ran. Now `close()` checkpoints and
+closes every connection, `seal()` refuses a store whose log it cannot fold
+in, and `shred()` takes the `-wal`, `-shm` and `-journal` files with it.
+`tests/test_close_and_seal.py` holds a reference on purpose, so the collector
+cannot rescue it.
+
+**An outcome was counted every time it was recorded.** `resolve_claim()`
+added to the claimant's record on every call, so a claim confirmed and then
+refuted counted as both, and three clicks on *one* claim crossed the
+three-outcome threshold after which every source that person spoke through
+is revalued. An outcome is now counted once; changing it needs
+`revise=True` and moves the count rather than adding a second
+(`tests/test_outcomes_counted_once.py`). Promises the same. Found by putting
+Confirmed and Refuted buttons in front of a person, which is the argument for
+doing that early. The same person asserting the same words again while the
+claim is open is now one claim, not two. The same session found that `why()`
+on a correction of an *observation* stopped at the correction — what was
+believed before dropped out of its own provenance. It now follows the
+supersession back.
 
 **Consolidation is deterministic.** Same content, same communities, same schemas, same verdict — 100 consecutive runs identical. Nobody else guarantees this, and without it *"why did you forget that?"* has no answer. Label propagation breaks ties by sorted id rather than randomly; community ids are derived, never uuid; and a no-op pass is genuinely a no-op rather than silently bumping a generation counter.
 

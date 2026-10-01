@@ -137,10 +137,50 @@ def key_permissions(path: str | Path) -> list[str]:
 
 # ── sealing ──────────────────────────────────────────────────────────────
 
+#: Files SQLite keeps beside a store. In WAL mode the most recent writes live
+#: in `-wal` until a checkpoint, so a store file read on its own can be
+#: missing the session -- and the sibling holds it in plaintext.
+SIDECARS = ("-wal", "-shm", "-journal")
+
+
+def _settle(src: Path) -> None:
+    """Fold a pending write-ahead log into the store before it is read.
+
+    Refuses rather than seals a partial store: an encrypted file missing
+    the latest writes, beside a plaintext log holding them, is worse than
+    an error -- it looks protected and is neither complete nor private.
+    """
+    wal = Path(str(src) + "-wal")
+    if not wal.exists() or wal.stat().st_size == 0:
+        return
+    import sqlite3
+    try:
+        conn = sqlite3.connect(str(src), timeout=5.0)
+        try:
+            conn.execute("PRAGMA wal_checkpoint(TRUNCATE)")
+        finally:
+            conn.close()
+    except sqlite3.Error as e:
+        raise SealError(
+            f"{src} has an unsettled write-ahead log and it could not be "
+            f"folded in ({e}). Close every program using the store and "
+            "try again.") from e
+    if wal.exists() and wal.stat().st_size:
+        raise SealError(
+            f"{src} is still being written (its -wal could not be emptied). "
+            "Sealing now would leave the newest writes outside the sealed "
+            "file, in plaintext. Close the store first.")
+
+
 def seal(plaintext_path: str | Path, sealed_path: str | Path,
          key: bytes) -> Path:
-    """Encrypt a store file. Authenticated, so tampering is detectable."""
+    """Encrypt a store file. Authenticated, so tampering is detectable.
+
+    A pending write-ahead log is folded in first, or the call refuses --
+    see `_settle`.
+    """
     src, dst = Path(plaintext_path), Path(sealed_path)
+    _settle(src)
     data = src.read_bytes()
     nonce = secrets.token_bytes(NONCE_BYTES)
     # MAGIC is authenticated as associated data, so a sealed file cannot be
@@ -190,8 +230,18 @@ def shred(path: str | Path) -> None:
     the old blocks, and claiming otherwise would be exactly the kind of
     comfortable falsehood this module exists to avoid. It overwrites once,
     then unlinks, which defeats casual recovery and nothing stronger.
+
+    SQLite's sidecar files (-wal, -shm, -journal) go the same way: they can
+    hold plaintext pages of the store, and leaving them behind would make
+    the shred of the main file a formality.
     """
     p = Path(path)
+    for suffix in SIDECARS:
+        _shred_one(Path(str(p) + suffix))
+    _shred_one(p)
+
+
+def _shred_one(p: Path) -> None:
     if not p.exists():
         return
     try:

@@ -17,7 +17,7 @@ import threading
 from pathlib import Path
 from typing import Any, Callable, Iterable, Sequence
 
-from .. import shards
+from .. import migrations, shards
 from ..protocols import PartitionError, ReadOnlyError
 
 _SCHEMA = (Path(__file__).parent.parent / "schema.sql").read_text(encoding="utf-8")
@@ -33,6 +33,16 @@ class SqliteStore:
         self.readonly = readonly
         self.immutable = False
         self._local = threading.local()
+        # Every reader connection this store opened, whichever thread opened
+        # it. close() needs them: in WAL mode SQLite folds the write-ahead
+        # log back into the main file only when the LAST connection closes,
+        # and a thread-local reader that outlives close() (it lives as long
+        # as the Owl object is referenced) kept every write of the session
+        # in `<store>-wal` and out of the main file. Owl.sealed() then
+        # encrypted the main file -- without the session -- and left the
+        # plaintext -wal beside the ciphertext.
+        self._readers: list[sqlite3.Connection] = []
+        self._readers_lock = threading.Lock()
         self._wq: queue.Queue = queue.Queue()
         self._closed = threading.Event()
         self._flow_cache: dict[str, frozenset[str]] | None = None
@@ -48,7 +58,8 @@ class SqliteStore:
             # on read-only media, a forensic copy, or a file another process
             # is actively writing must still be READABLE -- the machinery is
             # not allowed to be a gatekeeper on remembering.
-            with self._connect() as conn:
+            conn = self._connect()
+            try:
                 if not conn.execute(
                         "SELECT COUNT(*) FROM sqlite_master WHERE type='table'"
                         " AND name='observation'").fetchone()[0]:
@@ -56,9 +67,14 @@ class SqliteStore:
                         f"{self.path} is not an OWL store (no substrate "
                         "table), and read-only mode cannot create one")
                 self.sharded = shards.is_sharded(conn)
+            finally:
+                # `with sqlite3.connect()` commits but does not close, and an
+                # open connection is what keeps a -wal alive.
+                conn.close()
             self._writer = None
             return
-        with self._connect() as conn:
+        conn = self._connect()
+        try:
             conn.executescript(_SCHEMA)
             # G5: bring an older store up to the sharded layout, once, on
             # open. Reported rather than silent -- a migration that ran is
@@ -66,13 +82,25 @@ class SqliteStore:
             # invisible changes to files it was handed.
             self.migration = shards.migrate(conn)
             self.sharded = True
+            # A derived kind added since the store was written (2026-10-01:
+            # 'translation'). Reported beside the shard migration for the
+            # same reason -- a store that was rewritten is a fact about it.
+            added = migrations.widen_derived_kinds(conn)
+            if added:
+                self.migration = dict(self.migration or {})
+                self.migration["derived_kinds_added"] = added
+        finally:
+            conn.close()
         self._writer = threading.Thread(
             target=self._writer_loop, name="owl-writer", daemon=True
         )
         self._writer.start()
 
     # ── connections ──────────────────────────────────────────────────
-    def _connect(self) -> sqlite3.Connection:
+    def _connect(self, shared: bool = False) -> sqlite3.Connection:
+        """`shared=True` marks a reader that close() may close from another
+        thread. It is still used by exactly one thread while the store is
+        open; the only cross-thread call is the final close."""
         if self.readonly:
             uri = f"file:{Path(self.path).as_posix()}?mode=ro"
             # A WAL database needs to WRITE the -shm shared-memory file even
@@ -91,7 +119,8 @@ class SqliteStore:
             for attempt, extra in ((0, ""), (1, "&immutable=1")):
                 try:
                     conn = sqlite3.connect(uri + extra, uri=True, timeout=30.0,
-                                           isolation_level=None)
+                                           isolation_level=None,
+                                           check_same_thread=not shared)
                     conn.execute("SELECT 1 FROM sqlite_master LIMIT 1")
                     conn.row_factory = sqlite3.Row
                     self.immutable = bool(attempt)
@@ -100,7 +129,8 @@ class SqliteStore:
                     if attempt:
                         raise
             raise AssertionError("unreachable")
-        conn = sqlite3.connect(self.path, timeout=30.0, isolation_level=None)
+        conn = sqlite3.connect(self.path, timeout=30.0, isolation_level=None,
+                               check_same_thread=not shared)
         conn.row_factory = sqlite3.Row
         conn.execute("PRAGMA foreign_keys=ON")
         conn.execute("PRAGMA journal_mode=WAL")
@@ -110,7 +140,11 @@ class SqliteStore:
     def _reader(self) -> sqlite3.Connection:
         conn = getattr(self._local, "conn", None)
         if conn is None:
-            conn = self._local.conn = self._connect()
+            if self._closed.is_set():
+                raise RuntimeError("store is closed")
+            conn = self._local.conn = self._connect(shared=True)
+            with self._readers_lock:
+                self._readers.append(conn)
         return conn
 
     # ── the single writer ────────────────────────────────────────────
@@ -119,6 +153,15 @@ class SqliteStore:
         while True:
             item = self._wq.get()
             if item is _SENTINEL:
+                # Fold the write-ahead log into the main file before the
+                # writer lets go, so the main file is the whole store the
+                # moment close() returns -- whatever else still holds a
+                # connection. TRUNCATE also empties the -wal, so nothing of
+                # the session is left beside the store in it.
+                try:
+                    conn.execute("PRAGMA wal_checkpoint(TRUNCATE)")
+                except sqlite3.Error:                 # pragma: no cover
+                    pass
                 conn.close()
                 self._wq.task_done()
                 return
@@ -180,6 +223,16 @@ class SqliteStore:
         if self._closed.is_set():
             return
         self._closed.set()
+        # Readers first, so the writer is the last connection out: SQLite
+        # removes the -wal and -shm files only when the last one closes.
+        with self._readers_lock:
+            readers, self._readers = self._readers, []
+        for conn in readers:
+            try:
+                conn.close()
+            except sqlite3.Error:                     # pragma: no cover
+                pass
+        self._local = threading.local()
         if self._writer is None:            # read-only: nothing to drain
             return
         self._wq.put(_SENTINEL)

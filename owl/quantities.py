@@ -170,7 +170,55 @@ def bare_numbers(text: str) -> set[float]:
     return out
 
 
-def conflicts(before: str, after: str) -> list[str]:
+#: A number as other languages write it: grouped with "." or a space
+#: ("4.000", "4 000", NBSP and the narrow NBSP French uses), with a decimal
+#: comma ("2,5"). Any script's digits -- Arabic may write ٤٠٠٠.
+_NUM_INTL = (r"(\d{1,3}(?:[.,\u00a0\u202f ]\d{3})+(?:[.,]\d+)?"
+             r"|\d+(?:[.,]\d+)?)")
+_QTY_INTL = re.compile(rf"{_NUM_INTL}\s*({_UNIT_ALT})\b", re.I)
+_SEPARATORS = ((",", "."), (".", ","), (" ", "."), (" ", ","))
+
+
+def readings(token: str) -> set[float]:
+    """Every value a written number can mean under the conventions in use.
+    "4,000" is 4000 in English and 4.0 in German; both are returned, so a
+    figure is matched if ANY reading matches -- the direction that avoids
+    refusing a correct translation. A grouping separator only counts with
+    groups of exactly three digits, so "2,5" is 2.5 and never 25."""
+    t = re.sub(r"[\u00a0\u202f]", " ", str(token or "")).strip()
+    out: set[float] = set()
+    for g, d in _SEPARATORS:
+        eg, ed = re.escape(g), re.escape(d)
+        if re.fullmatch(rf"\d{{1,3}}(?:{eg}\d{{3}})+(?:{ed}\d+)?"
+                        rf"|\d+(?:{ed}\d+)?", t):
+            try:
+                out.add(float(t.replace(g, "").replace(d, ".")))
+            except ValueError:
+                continue
+    return out
+
+
+def all_numbers(text: str) -> set[float]:
+    """Every value any number in the text can be read as (see readings)."""
+    out: set[float] = set()
+    for pat in (_NUM_INTL, r"(\d+(?:[.,]\d+)?)"):
+        for m in re.finditer(pat, text or ""):
+            out |= readings(m.group(1))
+    return out
+
+
+def _intl_quantities(text: str) -> list[tuple[set[float], str, str]]:
+    """[(readings, canonical unit, raw)] for a text in another language."""
+    out = []
+    for m in _QTY_INTL.finditer(text or ""):
+        unit = canonical_unit(m.group(2))
+        if unit is not None:
+            out.append((readings(m.group(1)), unit, m.group(0)))
+    return out
+
+
+def conflicts(before: str, after: str, *, unit_words: bool = True
+              ) -> list[str]:
     """Unit problems introduced by rewriting `before` into `after`.
 
     Two things are dangerous and are rejected:
@@ -183,9 +231,21 @@ def conflicts(before: str, after: str) -> list[str]:
     constraint" is a legitimate and useful derivation, and an earlier version
     of this function rejected exactly that. Use `dropped()` if you want the
     informational case.
+
+    `unit_words=False` is for an `after` written in a language whose unit
+    WORDS this module cannot read ("4000 litir" is Somali for 4000 litres).
+    A number without a unit there is not evidence of a stripped unit, so
+    that check is off -- and a check that suits a translation is on
+    instead: every figure must survive, because a translation, unlike a
+    summary, does not get to leave one out. Abbreviations (mg, kg, km, l,
+    MHz) are read in any language, so "250 mg" becoming "250 g" is still a
+    changed value.
     """
-    a, b = parse(before), parse(after)
+    a = parse(before)
     problems: list[str] = []
+    if not unit_words:
+        return _conflicts_intl(a, after)
+    b = parse(after)
     by_dim_b: dict[str, list[Quantity]] = {}
     for q in b:
         by_dim_b.setdefault(q.dimension, []).append(q)
@@ -201,6 +261,35 @@ def conflicts(before: str, after: str) -> list[str]:
             problems.append(
                 f"{q.raw} lost its unit - the number {q.value:g} survived "
                 "without it")
+    return problems
+
+
+def _close(x: float, y: float, tol: float = 1e-6) -> bool:
+    return abs(x - y) <= tol * max(1.0, abs(x), abs(y))
+
+
+def _conflicts_intl(a: list[Quantity], after: str) -> list[str]:
+    """conflicts() for a text in another language: a figure may be written
+    "4.000" or "4 000" or "2,5", and unit WORDS may be unreadable here."""
+    problems: list[str] = []
+    every = all_numbers(after)
+    qb = _intl_quantities(after)
+    for q in a:
+        same = [x for x in qb if UNITS[x[1]][0] == q.dimension]
+        if same:
+            if q.dimension == "temperature":
+                ok = any(x[1] == q.unit and any(_close(v, q.value)
+                                                for v in x[0]) for x in same)
+            else:
+                ok = any(_close(v * UNITS[x[1]][1], q.base)
+                         for x in same for v in x[0])
+            if not ok:
+                problems.append(f"{q.raw} became "
+                                f"{', '.join(x[2] for x in same)} - value "
+                                "changed")
+        elif not any(_close(v, q.value) for v in every):
+            problems.append(f"{q.raw} is missing - the translation has no "
+                            f"{q.value:g} in it")
     return problems
 
 

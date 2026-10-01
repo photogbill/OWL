@@ -132,7 +132,8 @@ CREATE TABLE IF NOT EXISTS derived (
     created_at    REAL NOT NULL,
     kind          TEXT NOT NULL CHECK (kind IN
                     ('summary','abstraction','graft','hypothesis','conflict',
-                     'correction','reflection','community','decontext')),
+                     'correction','reflection','community','decontext',
+                     'translation')),
     epistemic_tag TEXT NOT NULL CHECK (epistemic_tag IN
                     ('observed','reported','inferred','hypothesized')),
     producer      TEXT NOT NULL,
@@ -682,3 +683,13 @@ CREATE TABLE IF NOT EXISTS failure (
     superseded_by TEXT
 );
 CREATE INDEX IF NOT EXISTS idx_failure_part ON failure(partition);
+
+-- v5 #10 cross-lingual claim identity. The language a node is written in,
+-- where it is known. Kept beside the substrate rather than in it: a language
+-- tag is a fact ABOUT the evidence, and a new column on the append-only
+-- observation table would need a migration that rewrites it. A node with no
+-- row here has an unknown language, which is different from English.
+CREATE TABLE IF NOT EXISTS node_lang (
+    node_id TEXT PRIMARY KEY,
+    lang    TEXT NOT NULL
+);

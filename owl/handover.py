@@ -71,6 +71,10 @@ class Manifest:
     counts: dict[str, int] = field(default_factory=dict)
     checksum: str = ""
     notes: str = ""
+    # Additions after the pack format settled carry their own checksum, so a
+    # pack written today still verifies on an engine that predates them (it
+    # ignores what it does not know) and an older pack still verifies here.
+    extras_checksum: str = ""
 
 
 def demote(tag: Epistemic, steps: int = 1) -> Epistemic | None:
@@ -141,13 +145,24 @@ def build_pack(store, *, partition: str, exporter: str, now: float,
         "observations": obs, "derived": derived, "edges": edges,
         "exposures": exposures, "absences": absences, "intentions": intentions,
     }
+    # v5 #10: the language each carried node is written in. Without it a
+    # translated intercept arrives as an unlabelled pair of texts.
+    langs: dict[str, str] = {}
+    try:
+        for r in store.query("SELECT node_id,lang FROM node_lang"):
+            if r["node_id"] in ids:
+                langs[r["node_id"]] = r["lang"]
+    except Exception:                       # noqa: BLE001 - pre-v5#10 store
+        langs = {}
+    extras = {"langs": langs}
     man = Manifest(
         version=PACK_VERSION, exported_at=now, exporter=exporter,
         source_partition=partition, label=label or partition,
         counts={k: len(v) for k, v in payload.items()},
         checksum=_checksum(payload), notes=notes,
+        extras_checksum=_checksum(extras),
     )
-    return {"manifest": asdict(man), **payload}
+    return {"manifest": asdict(man), **payload, **extras}
 
 
 def render_markdown(pack: dict, *, max_items: int = 0) -> str:
@@ -328,6 +343,14 @@ def read_pack(path: str | Path) -> dict:
         raise HandoverError(
             "checksum mismatch: this pack was modified after export. Refusing "
             "to graft -- a handover you cannot verify is worse than none.")
+    if man.get("extras_checksum"):
+        extras = {"langs": pack.get("langs", {})}
+        if _checksum(extras) != man["extras_checksum"]:
+            raise HandoverError(
+                "checksum mismatch on the pack's language tags: modified "
+                "after export. Refusing to graft.")
+    else:
+        pack.setdefault("langs", {})        # a pack from before v5 #10
     return pack
 
 

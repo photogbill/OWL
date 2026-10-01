@@ -17,6 +17,7 @@ from __future__ import annotations
 import hashlib
 import json
 import sqlite3
+import re
 import time
 import uuid
 from contextlib import contextmanager
@@ -68,6 +69,22 @@ SEMANTIC_FLOOR = 0.40
 # absolute level alone. A genuine match was rejected twice over for one
 # mistake.
 SEARCH_FLOOR = 0.15
+
+
+_LANG_TAG = re.compile(r"^[a-z]{2,3}(-[a-z0-9]{2,8})*$")
+
+
+def _norm_lang(tag: str) -> str:
+    """A BCP-47-shaped language tag, lower-cased: 'so', 'ps', 'pt-br'.
+
+    Refused rather than guessed when it is not one -- a misspelt tag would
+    silently become a new language that matches nothing."""
+    t = (tag or "").strip().replace("_", "-").lower()
+    if not _LANG_TAG.match(t):
+        raise ValueError(
+            f"{tag!r} is not a language tag. Use a BCP-47 code such as "
+            "'so', 'ps', 'ar', 'en' or 'pt-br'.")
+    return t
 
 
 class Owl:
@@ -255,10 +272,16 @@ class Owl:
                 claim_class: str | None = None, reliability: str = "F",
                 credibility: int = 6, supersedes: str | None = None,
                 trust: str = "trusted", producer_model: str | None = None,
-                acquisition_cost: float = 0.0) -> str:
-        """Record a primary observation. Immutable once written."""
+                acquisition_cost: float = 0.0, lang: str | None = None) -> str:
+        """Record a primary observation. Immutable once written.
+
+        `lang` is the language the content is WRITTEN in (a BCP-47 tag such
+        as "so", "ps", "ar", "en"). Optional, and its absence means unknown,
+        not English. See `translation()`.
+        """
         if not content or not content.strip():
             raise ValueError("refusing to store empty content")
+        lang = _norm_lang(lang) if lang is not None else None
         o = Origin(origin) if not isinstance(origin, Origin) else origin
         now = self.clock.now()
         nid = f"obs_{uuid.uuid4().hex[:16]}"
@@ -373,6 +396,9 @@ class Owl:
                     "INSERT INTO succession(src,dst,count) VALUES(?,?,1) "
                     "ON CONFLICT(src,dst) DO UPDATE SET count=count+1",
                     (prev, nid))
+            if lang:
+                c.execute("INSERT OR REPLACE INTO node_lang(node_id,lang) "
+                          "VALUES(?,?)", (nid, lang))
 
         self._s.write(_w)
         if blocked_supersede is not None:
@@ -395,9 +421,18 @@ class Owl:
                confidence: float = 0.7,
                epistemic: Epistemic = Epistemic.INFERRED,
                partition: str = "default", falsifier: str | None = None,
-               supersedes: str | None = None) -> str:
+               supersedes: str | None = None,
+               lang: str | None = None) -> str:
         """Write a derived node. Confidence and epistemic tag are CLAMPED to
-        what the parents allow -- abstraction cannot launder speculation."""
+        what the parents allow -- abstraction cannot launder speculation.
+
+        `lang`, when given, is the language the node is WRITTEN in (stored
+        with it, in the same transaction). Unit words are read in English
+        only, so for another language the integrity check swaps "a unit was
+        stripped" for "every figure survived" (quantities.conflicts)."""
+        if lang is not None:
+            lang = _norm_lang(lang)
+        unit_words = lang is None or lang.split("-")[0] == "en"
         if kind == "hypothesis":
             if not falsifier:
                 raise OwlError(
@@ -416,8 +451,10 @@ class Owl:
             prow = self._node_row(pid)
             if prow is None:
                 continue
-            problems = quantities.conflicts(prow["content"], content)
-            if problems and kind in ("summary", "abstraction", "graft"):
+            problems = quantities.conflicts(prow["content"], content,
+                                            unit_words=unit_words)
+            if problems and kind in ("summary", "abstraction", "graft",
+                                     "translation"):
                 raise OwlError(
                     f"dimensional integrity: {problems[0]} "
                     f"(deriving from {pid})")
@@ -446,11 +483,104 @@ class Owl:
                 (did, partition, *salience.initial_state(3), now))
             self._index_terms(c, did, partition,
                               lexical.term_frequencies(content))
+            if lang:
+                c.execute("INSERT OR REPLACE INTO node_lang(node_id,lang) "
+                          "VALUES(?,?)", (did, lang))
 
         self._s.write(_w)
         self._index_vectors(did, content, partition=partition,
                             source_ref=producer, when=now)
         return did
+
+    # ── v5 #10: cross-lingual claim identity ─────────────────────────
+    def translation(self, original_id: str, text: str, *, lang: str,
+                    producer: str, producer_model: str | None = None,
+                    confidence: float | None = None) -> str:
+        """Record a translation of a node, as a reading of it -- never a source.
+
+        ATK translates: a radio intercept in Somali, a Pashto document. The
+        original is the evidence and stays exactly as it was; the translation
+        is a derived node with the original as its only parent. Three things
+        follow from that, and each has a test:
+
+          * it can never outrank the original (the monotonicity clamp);
+          * it is never counted as an independent source -- `corroborated()`
+            follows it back to the original, so a report and its translation
+            are one origin, while the same claim from an independent report
+            in another language is two;
+          * dimensional integrity applies: a translation that turns
+            "250 mg" into "250 g" is refused, because in a dosage or a fuel
+            figure that is a dangerous sentence, not a free rendering.
+            Unit WORDS are read in English only; into another language the
+            check is that every figure survives (quantities.conflicts), and
+            FROM another language only abbreviations (mg, kg, l) are seen --
+            "4000 litir" carries no unit this engine can read.
+
+        Finding a Somali memory with an English query rides on this too: the
+        translation is indexed, and `original_of()` leads back to the
+        evidence. (With a multilingual embedder the original is findable
+        directly as well; this path works at Tier 0, with no model.)
+        """
+        row = self._node_row(original_id)
+        if row is None:
+            raise OwlError(f"no such node to translate: {original_id}")
+        if not text or not text.strip():
+            raise ValueError("refusing to store an empty translation")
+        lang = _norm_lang(lang)
+        src = self.language_of(original_id)
+        if src and src == lang:
+            raise OwlError(
+                f"{original_id} is already in '{lang}'. A rewording in the "
+                "same language is a paraphrase, not a translation -- use "
+                "derive(kind='summary') so it is clamped and checked as one.")
+        conf = float(row["confidence"]) if confidence is None else confidence
+        return self.derive(text, parents=[original_id], kind="translation",
+                           producer=producer, producer_model=producer_model,
+                           confidence=conf, epistemic=Epistemic.REPORTED,
+                           partition=row["partition"], lang=lang)
+
+    def language_of(self, node_id: str) -> str | None:
+        """The language a node is written in, or None if nobody said."""
+        try:
+            r = self._s.one("SELECT lang FROM node_lang WHERE node_id=?",
+                            (node_id,))
+        except sqlite3.OperationalError:     # an older store opened read-only
+            return None
+        return r["lang"] if r else None
+
+    def original_of(self, node_id: str) -> str:
+        """The evidence a translation is a reading of (itself, if it is not
+        a translation). Follows a translation of a translation to the end."""
+        seen: set[str] = set()
+        nid = node_id
+        while nid not in seen:
+            seen.add(nid)
+            if nid.startswith("obs_"):
+                return nid
+            row = self._s.one("SELECT kind FROM derived WHERE id=?", (nid,))
+            if row is None or row["kind"] != "translation":
+                return nid
+            parent = self._s.one(
+                "SELECT parent_id FROM derivation_edge WHERE child_id=? "
+                "LIMIT 1", (nid,))
+            if parent is None:
+                return nid
+            nid = parent["parent_id"]
+        return nid
+
+    def translations_of(self, node_id: str) -> list[dict]:
+        """Every recorded translation of a node, with its language."""
+        out = []
+        for r in self._s.query(
+                "SELECT d.id,d.content,d.confidence,d.producer,d.created_at "
+                "FROM derived d JOIN derivation_edge e ON e.child_id=d.id "
+                "WHERE d.kind='translation' AND e.parent_id=? "
+                "ORDER BY d.created_at", (node_id,)):
+            out.append({"id": r["id"], "lang": self.language_of(r["id"]),
+                        "content": r["content"],
+                        "confidence": r["confidence"],
+                        "producer": r["producer"], "at": r["created_at"]})
+        return out
 
     @property
     def readonly(self) -> bool:
@@ -1021,8 +1151,23 @@ class Owl:
                 (partition,)):
             if attribution.proposition_hash(r["content"]) == h:
                 nodes.append(r["id"])
+        # v5 #10: the same claim in another language. A translation is never
+        # a source of its own -- it is a reading of one -- so a match on a
+        # translation counts its ORIGINAL. Two translations of one Somali
+        # report are one source; a Somali report and an independent English
+        # one are two.
+        via = 0
+        for r in self._s.query(
+                "SELECT id,content FROM derived WHERE kind='translation' "
+                "AND partition=?", (partition,)):
+            if attribution.proposition_hash(r["content"]) == h:
+                nodes.append(self.original_of(r["id"]))
+                via += 1
         out = self.independent_sources(sorted(set(nodes)))
         out["proposition"] = text
+        out["via_translation"] = via
+        out["languages"] = sorted({lg for lg in (
+            self.language_of(n) for n in set(nodes)) if lg})
         return out
 
     # ── ATTRIBUTED BELIEF ────────────────────────────────────────────
@@ -1053,18 +1198,30 @@ class Owl:
         """
         cid = self.claimant(who, partition=partition)
         clid = f"clm_{uuid.uuid4().hex[:12]}"
+        h = attribution.proposition_hash(proposition)
 
-        def _w(c: sqlite3.Connection) -> None:
+        def _w(c: sqlite3.Connection) -> str:
+            # The same person asserting the same thing again, while it is
+            # still open, is ONE claim -- or a double-click would count as
+            # two assertions and later as two outcomes. Once it is resolved,
+            # saying it again is a new claim with its own outcome.
+            # Same WORDS, not just the same hash: the hash drops one-letter
+            # tokens, so "proposition 1" and "proposition 2" share one.
+            same = " ".join(proposition.split()).lower()
+            for row in c.execute(
+                    "SELECT id, proposition FROM claim WHERE claimant_id=? "
+                    "AND prop_hash=? AND outcome='unresolved'", (cid, h)):
+                if " ".join(str(row[1]).split()).lower() == same:
+                    return row[0]
             c.execute(
                 "INSERT INTO claim(id,claimant_id,node_id,proposition,"
                 "prop_hash,asserted_at) VALUES(?,?,?,?,?,?)",
-                (clid, cid, node_id, proposition,
-                 attribution.proposition_hash(proposition), self.clock.now()))
+                (clid, cid, node_id, proposition, h, self.clock.now()))
             c.execute("UPDATE claimant SET claims_made=claims_made+1 WHERE id=?",
                       (cid,))
+            return clid
 
-        self._s.write(_w)
-        return clid
+        return self._s.write(_w)
 
     def record_of(self, who: str, *, partition: str = "default") -> Record:
         """A claimant's track record, learned from outcomes."""
@@ -1091,21 +1248,42 @@ class Owl:
                         "grade": rec.grade, "accuracy": rec.accuracy})
         return out
 
-    def resolve_claim(self, claim_id: str, *, confirmed: bool) -> Record | None:
+    def resolve_claim(self, claim_id: str, *, confirmed: bool,
+                      revise: bool = False) -> Record | None:
         """An outcome lands. The claimant's record moves, and if it moves far
-        enough, everything they said is revalued."""
+        enough, everything they said is revalued.
+
+        An outcome is counted ONCE. Resolving a claim again with the same
+        outcome changes nothing; resolving it the other way is refused unless
+        `revise=True`, which MOVES the count rather than adding a second one.
+        (Before 2026-10-01 a second call added again, so a claim confirmed
+        and then refuted counted as both -- and three clicks on one claim
+        were enough to judge a source.)"""
         row = self._s.one("SELECT claimant_id FROM claim WHERE id=?", (claim_id,))
         if row is None:
             return None
-        col = "claims_confirmed" if confirmed else "claims_refuted"
+        new = "confirmed" if confirmed else "refuted"
+        col = {"confirmed": "claims_confirmed", "refuted": "claims_refuted"}
 
-        def _w(c: sqlite3.Connection) -> None:
-            c.execute("UPDATE claim SET outcome=? WHERE id=?",
-                      ("confirmed" if confirmed else "refuted", claim_id))
-            c.execute(f"UPDATE claimant SET {col}={col}+1 WHERE id=?",
+        def _w(c: sqlite3.Connection) -> str:
+            cur = c.execute("SELECT outcome FROM claim WHERE id=?",
+                            (claim_id,)).fetchone()[0]
+            if cur == new:
+                return ""
+            if cur != "unresolved" and not revise:
+                return cur
+            c.execute("UPDATE claim SET outcome=? WHERE id=?", (new, claim_id))
+            c.execute(f"UPDATE claimant SET {col[new]}={col[new]}+1 WHERE id=?",
                       (row["claimant_id"],))
+            if cur in col:
+                c.execute(f"UPDATE claimant SET {col[cur]}=MAX(0,{col[cur]}-1) "
+                          "WHERE id=?", (row["claimant_id"],))
+            return ""
 
-        self._s.write(_w)
+        was = self._s.write(_w)
+        if was:
+            raise OwlError(f"claim {claim_id} was already resolved as {was}; "
+                           "pass revise=True to change the outcome")
         return self._revalue_claimant(row["claimant_id"])
 
     # ── COMMITMENTS ──────────────────────────────────────────────────
@@ -1140,27 +1318,48 @@ class Owl:
         return out
 
     def resolve_commitment(self, commitment_id: str, *, kept: bool,
-                           note: str = "") -> Record | None:
+                           note: str = "", revise: bool = False
+                           ) -> Record | None:
         """Kept or broken. A broken promise degrades the claimant's
         reliability, and that automatically revalues everything they ever
-        told you."""
+        told you.
+
+        Counted once, as resolve_claim: the same outcome again changes
+        nothing (a new note is kept); the other outcome needs `revise=True`
+        and moves the count. A waived promise was never counted."""
         row = self._s.one("SELECT claimant_id FROM commitment WHERE id=?",
                           (commitment_id,))
         if row is None:
             return None
-        col = "kept_count" if kept else "broken_count"
+        new = "kept" if kept else "broken"
+        col = {"kept": "kept_count", "broken": "broken_count"}
         now = self.clock.now()
 
-        def _w(c: sqlite3.Connection) -> None:
+        def _w(c: sqlite3.Connection) -> str:
+            cur = c.execute("SELECT status FROM commitment WHERE id=?",
+                            (commitment_id,)).fetchone()[0]
+            if cur == new:
+                if note:
+                    c.execute("UPDATE commitment SET note=? WHERE id=?",
+                              (note, commitment_id))
+                return ""
+            if cur not in ("open", "due") and not revise:
+                return cur
             c.execute("UPDATE commitment SET status=?,resolved_at=?,note=? "
-                      "WHERE id=?",
-                      ("kept" if kept else "broken", now, note, commitment_id))
-            c.execute(f"UPDATE claimant SET {col}={col}+1 WHERE id=?",
+                      "WHERE id=?", (new, now, note, commitment_id))
+            c.execute(f"UPDATE claimant SET {col[new]}={col[new]}+1 WHERE id=?",
                       (row["claimant_id"],))
+            if cur in col:
+                c.execute(f"UPDATE claimant SET {col[cur]}=MAX(0,{col[cur]}-1) "
+                          "WHERE id=?", (row["claimant_id"],))
             c.execute("UPDATE intention SET status='completed' WHERE "
                       "origin_ref=?", (f"commitment:{commitment_id}",))
+            return ""
 
-        self._s.write(_w)
+        was = self._s.write(_w)
+        if was:
+            raise OwlError(f"promise {commitment_id} was already resolved as "
+                           f"{was}; pass revise=True to change the outcome")
         return self._revalue_claimant(row["claimant_id"])
 
     def _revalue_claimant(self, claimant_id: str) -> Record:
@@ -2635,6 +2834,14 @@ class Owl:
                               "(child_id,parent_id,role) VALUES(?,?,?)",
                               (a, b, e["role"]))
 
+            # v5 #10: languages travel with the nodes they describe. OR
+            # IGNORE, so a corroborated observation keeps the tag it had.
+            for old_id, lg in (pack.get("langs") or {}).items():
+                nid = idmap.get(old_id)
+                if nid:
+                    c.execute("INSERT OR IGNORE INTO node_lang(node_id,lang) "
+                              "VALUES(?,?)", (nid, lg))
+
             if carry_exposures:
                 # You inherit not just what they knew, but what they had been
                 # TOLD and when -- which is most of a real handover briefing.
@@ -2907,6 +3114,19 @@ class Owl:
                     (nid,)):
                 rec["parents"].append({"id": e["parent_id"], "role": e["role"]})
                 stack.append(e["parent_id"])
+            # A correction of an OBSERVATION is a new observation that
+            # supersedes the old one, not a derivation of it -- so the chain
+            # stopped at the correction and what was believed before it
+            # dropped out of its own provenance. (A corrected inference was
+            # always walked: it is derived from what it corrects.)
+            for e in self._s.query(
+                    "SELECT old_node FROM supersession WHERE new_node=? "
+                    "ORDER BY at", (nid,)):
+                # The role is the PARENT's, as on a derivation edge
+                # ("evidence"): the old node is what this one superseded.
+                rec["parents"].append({"id": e["old_node"],
+                                       "role": "superseded"})
+                stack.append(e["old_node"])
             out.append(rec)
         return out
 
@@ -3036,6 +3256,28 @@ class Owl:
             "trigger_spec,action,origin_ref) VALUES(?,?,?,?,?,?,?)",
             (iid, partition, self.clock.now(), kind, spec, action, origin_ref)))
         return iid
+
+    def complete_intention(self, intention_id: str, *,
+                           status: str = "completed") -> bool:
+        """An intention was carried out ('completed') or dropped ('expired').
+
+        Prospective memory had a way in (`intend`) and no way out except a
+        commitment resolving: an operator who did the thing could not say so,
+        and it stayed due for ever -- which is how a reminder list becomes
+        one nobody reads. Returns False when there was nothing pending by
+        that id (already done, or not an intention), so a double click is
+        not an error and not a second write.
+        """
+        if status not in ("completed", "expired"):
+            raise ValueError("an intention ends 'completed' or 'expired'")
+        row = self._s.one("SELECT status FROM intention WHERE id=?",
+                          (intention_id,))
+        if row is None or row["status"] not in ("pending", "fired"):
+            return False
+        self._s.write(lambda c: c.execute(
+            "UPDATE intention SET status=? WHERE id=? AND status IN "
+            "('pending','fired')", (status, intention_id)))
+        return True
 
     def due(self, *, partition: str = "default") -> list[dict]:
         now = self.clock.now()
