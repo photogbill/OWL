@@ -5,7 +5,7 @@ memories it is fast enough and *exact*. Past roughly 100k it stops being
 fast enough, and that is what this is for.
 
 WHY NOT zvec / faiss / hnswlib: OWL's install story is `pip install
-owl-engine` with no compiler, no server, no wheels that might not exist for
+-e .` with no compiler, no server, no wheels that might not exist for
 your Python. Trading that for a speedup most stores will never need is a
 bad deal. `VectorIndex` already abstracts search, so a caller who wants
 faiss can implement four methods and pass it in -- what ships is a pure

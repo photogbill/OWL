@@ -534,7 +534,7 @@ Fusion of lexical and semantic scores is **max-of-normalised, not a weighted sum
 ```bash
 pip install -e .              # Tier 0 — everything above. stdlib only.
 pip install -e ".[embed]"     # Tier 1 — + semantic recall (ONNX)
-pip install -e ".[llama]"     # Tier 2 — + reconstructive compression
+pip install -e ".[llama]"     # Tier 2 — + a local GGUF Reasoner (every Tier 2 pass is off until you turn it on)
 
 ```
 
@@ -550,6 +550,30 @@ A library that quietly reaches for the network the first time it's asked a quest
 A store that ran at Tier 0 for a month is **still fully valid** — the substrate is complete and the lexical index works. Attach an embedder later and `reindex()` backfills the vectors. Nothing gets re-ingested.
 
 The hashing fallback is deliberately **not** counted as Tier 1: a fallback that silently produces poor retrieval while looking like it works is worse than no fallback, so `doctor()` says so.
+
+### Tier 2: the model proposes, deterministic code disposes
+
+A Reasoner is any object with `complete(prompt, *, grammar, max_tokens, temperature) -> str`. Two adapters ship: `owl.adapters.openai_http.OpenAICompatReasoner` (llama.cpp's server, vLLM, LM Studio, Ollama's `/v1`; **stdlib only**, ignores proxy settings unless told otherwise) and `owl.adapters.llama_reasoner.LlamaCppReasoner` (in-process GGUF with native grammars, the `llama` extra).
+
+```python
+from owl import Owl, Tier2Config
+from owl.adapters.openai_http import OpenAICompatReasoner
+
+mind = Owl.open("field.owl",
+                reasoner=OpenAICompatReasoner("http://127.0.0.1:8080/v1", "qwen2.5-14b"),
+                tier2=Tier2Config(decontext=True, resolutions=True, compression="report"))
+mind.tend(budget_seconds=60)      # report["tier2"] says what ran; report["skipped"] what didn't
+```
+
+Attaching a model changes **nothing** until a `Tier2Config` switch is on — every switch defaults to off. Every pass obeys the same rules:
+
+* **Cite or it doesn't count.** Each answer must quote its sources verbatim; every number, identifier and proper name in it must appear in a verified quote. An answer that fails is stored **only** as a quarantined hypothesis, with the producing model recorded.
+* **Self-disagreement is ignorance.** Each question is asked 3 times. No majority, nothing written. A 2-of-3 conclusion carries less confidence, and more A7 *uncertainty*, than a 3-of-3 one.
+* **Conflicts are proposed, never resolved, by a model.** `accept_resolution()` re-runs the supersession authority rules a human write would face, and refuses when they fail.
+* **Compression is earned.** The record is hidden and rebuilt from a cue; every rebuild must clear the fidelity floor, numbers all-or-nothing. `report` proves; `apply` writes the cue as a summary and demotes the original. The original is never altered.
+* **Quarantined content never enters a prompt**, and model work stops at `budget_seconds` / `max_calls_per_pass`, reporting what it deferred.
+
+`bench/tier2_ablation.py` measures what each rule buys against known answers — and shows the limit too: a model that *consistently* picks the wrong person who really is in the sources passes both checks. **No real model has been measured yet**; the scripted profiles in the bench demonstrate failure modes, nothing more.
 
 ---
 
@@ -582,7 +606,7 @@ Where the biology and the engineering disagree, the engineering wins. Human memo
 |  | Typical agent memory | OWL |
 | --- | --- | --- |
 | Forgetting | delete rows, or never | decay the **index**; the record is immutable |
-| Summarisation | on a timer | only what it can **prove** it can reconstruct *(Tier 2)* |
+| Summarisation | on a timer | only what it can **prove** it can reconstruct *(Tier 2, off by default)* |
 | "I don't know" | indistinguishable from bad matches | first-class, ~0.1 ms, no model call |
 | Model-generated content | mixed into the same store | monotone epistemic tag; can't be laundered |
 | Staleness | caller's problem | learned per-claim-class half-life |
@@ -671,8 +695,15 @@ later, which is the argument for the test.
 the jointly-edited ledger (`ledger()` / `correct()`, an edit recorded as
 `user_correction`).
 
+**Tier 2, built and off by default** — Reasoner adapters, the citation
+verifier, 3-sample self-agreement, decontextualisation, conflict-resolution
+proposals and proven compression (see *Tier 2* above). Tested against
+scripted models only.
+
 **Not yet** — external benchmarks (LoCoMo, LongMemEval, HaluMem). The local
 epistemic scoreboard in `bench/scoreboard.py` is not a substitute for them.
+Tier 2 on a real model (run `bench/tier2_ablation.py --endpoint …`); REM
+recombination (C3) and upgrade re-derivation (T5).
 
 **Cross-lingual claim identity.** A memory recorded in Somali is evidence;
 its English translation is a *reading* of it. `translation(original, text,
@@ -876,8 +907,8 @@ And two the code enforces mechanically: **nothing calls `time.time()**` (the clo
 
 Useful and self-contained, roughly in order:
 
-* **A `Reasoner` adapter** — llama.cpp with GBNF grammars, or any OpenAI-compatible endpoint. Unlocks Tier 2.
-* **An ANN index** behind `VectorIndex` — the only place that knows how similarity is computed.
+* **Tier 2 results on real models** — adapters for llama-cpp-python and any OpenAI-compatible server ship in `owl/adapters/`; what is missing is `bench/tier2_ablation.py` run against real 7B–40B models, with the numbers published either way.
+* **A faster ANN backend** — a pure-stdlib IVF index ships (`owl/ann.py`); an HNSW or faiss backend behind `VectorIndex`, as an optional extra with its recall measured by `recall_at_k()`, is welcome.
 * **Benchmark harness** for LoCoMo / LongMemEval.
 * **A Postgres `Store**` — the protocol is small and SQLite-specific SQL is confined to one file.
 * **Adversarial tests.** If you can make it assert something it was never told, that's the most valuable issue you can file.

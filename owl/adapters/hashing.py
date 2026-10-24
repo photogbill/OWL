@@ -5,7 +5,7 @@ captures overlap and not meaning. It exists for two reasons:
 
   * tests need a deterministic Embedder that runs in microseconds
   * the two-space machinery should be exercisable by anyone who just ran
-    `pip install owl-engine`, without fetching anything
+    `pip install -e .` from a clone, without fetching anything
 
 Use `OnnxEmbedder` for real work. The honest framing matters: a fallback that
 silently produces poor retrieval while looking like it works is worse than no

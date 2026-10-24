@@ -73,7 +73,7 @@ class GgufEmbedder:
         except ImportError as e:                          # pragma: no cover
             raise ImportError(
                 "GgufEmbedder needs llama-cpp-python. Install the prebuilt "
-                "wheel: pip install owl-engine[llama]"
+                "wheel, or from the owl-engine clone: pip install -e \".[llama]\""
             ) from e
 
         p = Path(model_path)

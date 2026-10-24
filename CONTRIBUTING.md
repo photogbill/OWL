@@ -59,8 +59,8 @@ Each has a test. If you break one, the fix is the invariant, not the test.
 
 ## What's most wanted
 
-- **`Reasoner` adapter** — llama.cpp + GBNF, or OpenAI-compatible. Unlocks Tier 2
-- **ANN index** behind `VectorIndex` — the one place that knows about similarity
+- **Tier 2 on real models** — the adapters ship (`owl/adapters/openai_http.py`, `llama_reasoner.py`); run `bench/tier2_ablation.py` against a real model and publish the numbers
+- **Faster ANN backend** — a stdlib IVF ships (`owl/ann.py`); HNSW/faiss behind `VectorIndex` as an optional extra
 - **Benchmarks** — LoCoMo, LongMemEval
 - **Postgres `Store`** — the protocol is small; SQLite-specific SQL is in one file
 - **Adversarial tests** — if you can make OWL assert something it was never

@@ -31,7 +31,8 @@ class OnnxEmbedder:
             from tokenizers import Tokenizer
         except ImportError as e:      # pragma: no cover
             raise ImportError(
-                "OnnxEmbedder needs `pip install owl-engine[embed]`"
+                "OnnxEmbedder needs the embed extra: `pip install -e \".[embed]\"` "
+                "from the owl-engine clone"
             ) from e
 
         mp, tp = Path(model_path), Path(tokenizer_path)

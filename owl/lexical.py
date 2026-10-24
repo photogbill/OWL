@@ -1,6 +1,6 @@
 """Tier-0 lexical index. No embedder, no numpy, no model.
 
-This exists so `pip install owl-engine` does something useful with zero
+This exists so a plain install (`pip install -e .`) does something useful with zero
 dependencies. It is deliberately simple: normalized term frequency with an
 IDF weight computed from the real document frequency (not the self-referential
 formula that ships in a lot of hand-rolled 'TF-IDF' implementations).

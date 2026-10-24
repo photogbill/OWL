@@ -693,3 +693,71 @@ CREATE TABLE IF NOT EXISTS node_lang (
     node_id TEXT PRIMARY KEY,
     lang    TEXT NOT NULL
 );
+
+-- ── Tier 2 (plan Part XIV) ───────────────────────────────────────────────
+-- Every model run is recorded, whatever its outcome: the store must be able
+-- to say which model concluded what, how often it agreed with itself, and
+-- how often its citations failed. Bookkeeping, not evidence -- these tables
+-- are mutable; observations are not.
+CREATE TABLE IF NOT EXISTS reasoner_run (
+    id             INTEGER PRIMARY KEY AUTOINCREMENT,
+    at             REAL NOT NULL,
+    task           TEXT NOT NULL,     -- decontext | resolution | compression
+    subject        TEXT NOT NULL,     -- the node or conflict asked about
+    model          TEXT,
+    prompt_version TEXT,
+    samples        INTEGER NOT NULL,
+    agreeing       INTEGER NOT NULL,  -- T2: size of the winning group
+    verified       INTEGER NOT NULL,  -- T1: samples whose citations held
+    outcome        TEXT NOT NULL,     -- written | quarantined | disagreed |
+                                      -- no_answer | proposed | proven |
+                                      -- failed | skipped | error
+    result_node    TEXT,
+    detail         TEXT NOT NULL DEFAULT '{}',
+    ms             REAL NOT NULL DEFAULT 0
+);
+CREATE INDEX IF NOT EXISTS reasoner_run_subject ON reasoner_run(task, subject);
+CREATE INDEX IF NOT EXISTS reasoner_run_result ON reasoner_run(result_node);
+
+-- A model's view of a recorded conflict. A PROPOSAL only: accepting one
+-- re-runs supersession authority (defence.may_supersede + the coup check).
+CREATE TABLE IF NOT EXISTS resolution_proposal (
+    id            INTEGER PRIMARY KEY AUTOINCREMENT,
+    conflict_id   TEXT NOT NULL,
+    partition     TEXT NOT NULL,
+    old_node      TEXT NOT NULL,
+    new_node      TEXT NOT NULL,
+    verdict       TEXT NOT NULL CHECK (verdict IN
+                    ('keep_old','adopt_new','both_hold','undetermined')),
+    rationale     TEXT NOT NULL,
+    citations     TEXT NOT NULL DEFAULT '[]',
+    agreement     REAL NOT NULL,
+    model         TEXT,
+    run_id        INTEGER,
+    status        TEXT NOT NULL DEFAULT 'pending' CHECK (status IN
+                    ('pending','accepted','refused','rejected')),
+    status_reason TEXT,
+    decided_by    TEXT,
+    created_at    REAL NOT NULL,
+    decided_at    REAL
+);
+CREATE INDEX IF NOT EXISTS resolution_proposal_status
+    ON resolution_proposal(partition, status);
+CREATE INDEX IF NOT EXISTS resolution_proposal_conflict
+    ON resolution_proposal(conflict_id);
+
+-- C1/T3: the proof that a memory can be rebuilt, and whether it was spent.
+CREATE TABLE IF NOT EXISTS compression (
+    node_id      TEXT PRIMARY KEY,
+    partition    TEXT NOT NULL,
+    cue          TEXT NOT NULL,
+    fidelity     TEXT NOT NULL DEFAULT '[]',   -- one score per rebuild
+    min_fidelity REAL NOT NULL DEFAULT 0,
+    status       TEXT NOT NULL CHECK (status IN
+                   ('proven','failed','applied')),
+    reason       TEXT NOT NULL DEFAULT '',
+    model        TEXT,
+    proved_at    REAL NOT NULL,
+    summary_node TEXT,
+    applied_at   REAL
+);

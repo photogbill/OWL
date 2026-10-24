@@ -36,7 +36,7 @@ The difference shows up exactly where it matters — after a hundred cycles of a
 
 **But that's a subtler sell than "we have provenance and they don't."** Lead with what only OWL does: enforcement, the six FOK states, transactive memory, sealed partitions, and zero dependencies.
 
-**Also worth noting:** Memanto's on-prem path requires Docker (the Moorcheh engine runs as a container). LycheeMem needs a server. MIRIX needs Docker + Postgres. **OWL's `pip install owl-engine` with no daemon, no container, and no model remains genuinely unmatched** in this set.
+**Also worth noting:** Memanto's on-prem path requires Docker (the Moorcheh engine runs as a container). LycheeMem needs a server. MIRIX needs Docker + Postgres. **OWL's install from a clone (`pip install -e .`, Python only) with no daemon, no container, and no model remains genuinely unmatched** in this set.
 
 ---
 
@@ -124,13 +124,23 @@ Current honest reading: **neither condition bites at Tier 0 by 200 distractors.*
 
 ## 6. What OWL is still missing
 
+*Status update, 2026-10-24: all four items below have since been built. Each paragraph is kept as written, with a status line, so the reasoning stays on record.*
+
 **Decontextualisation (LycheeMem) — the biggest remaining gap.** They expand pronouns and context-dependent phrases at write time, so every record is standalone: *"he said it'd arrive Thursday"* becomes *"Ahmed said the pump gasket would arrive Thursday 14 March."* OWL stores raw content, which means a large fraction of conversational memories are useless out of context. This is a genuine retrieval-quality deficit and it needs a model, so it's Tier 2 — but a partial deterministic version (resolving pronouns against the episode's entity mentions) is achievable at Tier 0 and worth trying first.
+
+*Status: built. Tier 0 half — `decontextualise()` / `decontextualise_all()`, refusing ambiguity. Tier 2 half — behind the `tier2.decontext` flag (off by default), every output citation-checked; unverifiable rewrites are stored only as quarantined hypotheses.*
 
 **`failure_pattern` as a first-class type (LycheeMem).** OWL has negative memory for *absence* ("I looked, it isn't there") but not for *failure* ("we tried this and it didn't work, here's why"). For an analyst toolkit that's arguably the more valuable of the two.
 
+*Status: built — `failed()`, `prior_failures()`, `supersede_failure()`.*
+
 **Action-outcome loop (LycheeMem).** They log `retrieval_count`, `action_success_count`, and later user feedback, closing a lightweight loop without training. OWL has a `calibration` table but nothing writes to it. That's a dangling thread and should either be wired or removed.
 
+*Status: wired — `predicted()` and `outcome()` write the `calibration` table; `calibration()` reads it.*
+
 **Portable markdown export (Memanto's OKF).** `.owlpack` is JSON, which is inspectable but not *readable*. A markdown rendering would make handover packs reviewable by a human before transfer — which matters, because the pack format's whole justification is that you can read what you're handing someone.
+
+*Status: built — `review_pack()` renders a pack as markdown (`handover.render_markdown`) before transfer.*
 
 ---
 

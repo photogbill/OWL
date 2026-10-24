@@ -351,9 +351,94 @@ def check_shards(mind, rep: Report) -> None:
                        "across a boundary; re-import from source")
 
 
+def check_tier2(mind, rep: Report) -> None:
+    """Tier 2 -- is a model attached, what may it do, and is it any good?
+
+    Configuration only: no model call is ever made from here (principle 3:
+    diagnosis must work when the thing is broken, and a dead endpoint is a
+    thing that breaks). The quality figures come from runs already on file.
+    """
+    from . import tier2 as t2
+    cfg = getattr(mind, "tier2", None) or t2.Tier2Config()
+    r = getattr(mind, "reasoner", None)
+    on = [n for n, v in (("decontext", cfg.decontext),
+                         ("resolutions", cfg.resolutions),
+                         ("compression", cfg.compression != "off")) if v]
+    flags = (", ".join(f"{n}" + (f"={cfg.compression}"
+                                 if n == "compression" else "") for n in on)
+             or "none")
+    if r is None:
+        rep.verdict("tier2.reasoner", not on,
+                    "Tier 2 switches match what is attached",
+                    ok_detail="no Reasoner attached; Tier 2 is off "
+                              "(optional -- everything else works without it)",
+                    bad_detail=f"switched on ({flags}) but no Reasoner is "
+                               "attached, so tend() skips them every pass",
+                    remedy="attach a Reasoner (owl.adapters.openai_http or "
+                           "llama_reasoner), or turn the switches off",
+                    warn_only=True)
+        return
+    desc = {}
+    if callable(getattr(r, "describe", None)):
+        try:
+            desc = r.describe() or {}
+        except Exception as exc:                              # noqa: BLE001
+            desc = {"describe_failed": str(exc)}
+    where = desc.get("base_url") or desc.get("model_path") or ""
+    rep.add("tier2.reasoner", "A Reasoner is attached", PASS,
+            f"{getattr(r, 'name', type(r).__name__)}"
+            + (f" ({where})" if where else "")
+            + f"; tend() switches: {flags}")
+    rep.verdict("tier2.samples", cfg.samples >= 2 or not on,
+                "Self-disagreement can be measured",
+                ok_detail=f"{cfg.samples} samples per question, majority "
+                          f"{cfg.agreement:.2f}",
+                bad_detail="samples=1: a single answer cannot disagree with "
+                           "itself, so T2 is not running",
+                remedy="set tier2.samples to 3 (the default)",
+                warn_only=True)
+    stats = t2.run_stats(mind)
+    if not stats.get("available"):
+        rep.add("tier2.runs", "Tier 2 run history", WARN,
+                "this store predates the Tier 2 tables",
+                remedy="open it read-write once; the tables are additive")
+        return
+    by = stats["by_task"]
+    total = sum(sum(v.values()) for v in by.values())
+    quarantined = sum(v.get("quarantined", 0) for v in by.values())
+    disagreed = sum(v.get("disagreed", 0) for v in by.values())
+    judged = total - sum(v.get("skipped", 0) + v.get("error", 0)
+                         for v in by.values())
+    rate = quarantined / judged if judged else 0.0
+    rep.verdict("tier2.citations_hold", judged < 10 or rate <= 0.5,
+                "The model's citations usually check out",
+                ok_detail=(f"{total} run(s) on file; {quarantined} "
+                           f"quarantined, {disagreed} self-disagreements"
+                           if total else "no Tier 2 runs yet"),
+                bad_detail=f"{quarantined} of {judged} answers failed the "
+                           "citation check and were quarantined -- the "
+                           "model is inventing names or numbers more often "
+                           "than not",
+                remedy="use a larger model, or constrain output "
+                       "(constrain='grammar' on llama.cpp); nothing wrong "
+                       "was stored, but the passes are doing little",
+                warn_only=True)
+    try:
+        pending = mind._scalar("SELECT COUNT(*) FROM resolution_proposal "
+                               "WHERE status='pending'")
+    except Exception:                                         # noqa: BLE001
+        pending = 0
+    if pending:
+        rep.add("tier2.proposals", "Conflict-resolution proposals", WARN,
+                f"{pending} proposal(s) await a decision; no belief changes "
+                "until one is accepted",
+                remedy="resolutions() lists them; accept_resolution() or "
+                       "reject_resolution()")
+
+
 ALL = (check_store, check_substrate, check_monotonicity, check_embedder,
        check_vectors, check_queue, check_defence, check_crypto,
-       check_decisions, check_shards)
+       check_decisions, check_shards, check_tier2)
 
 
 def run(mind) -> Report:

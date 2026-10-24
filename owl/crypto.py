@@ -33,7 +33,8 @@ KEY MANAGEMENT, and the part nobody documents:
   * The key is never written into the store, never logged, and never
     included in a handover pack.
 
-Requires `pip install owl-engine[crypto]` (the `cryptography` package).
+Requires the `crypto` extra -- `pip install -e ".[crypto]"` from a clone
+(the `cryptography` package; OWL is not on PyPI).
 Absent, every entry point raises with that instruction -- it never falls
 back to something weaker, because a silent downgrade in a crypto path is
 the worst possible failure.
@@ -72,7 +73,8 @@ def _aesgcm(key: bytes):
     except ImportError as e:                                  # pragma: no cover
         raise CryptoUnavailable(
             "encryption at rest needs the `cryptography` package: "
-            "pip install owl-engine[crypto]. OWL will not fall back to a "
+            "pip install -e \".[crypto]\" from the owl-engine clone (or "
+            "pip install cryptography). OWL will not fall back to a "
             "weaker scheme -- a silent downgrade in a crypto path is the "
             "worst failure available."
         ) from e

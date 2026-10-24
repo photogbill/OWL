@@ -20,3 +20,6 @@ venv/
 *.log
 .vscode/
 .idea/
+
+# Session-written commit message (read by ATK push.bat / tools/commit_message.py)
+.git-commit-message.txt

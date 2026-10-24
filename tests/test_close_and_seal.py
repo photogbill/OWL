@@ -30,7 +30,7 @@ from owl import crypto
 
 needs_crypto = pytest.mark.skipif(
     not crypto.available(),
-    reason="cryptography not installed (owl-engine[crypto])")
+    reason="cryptography not installed (the crypto extra)")
 
 NOTE = "Dr Warsame runs the Bardera clinic."
 

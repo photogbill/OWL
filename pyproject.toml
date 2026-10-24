@@ -24,7 +24,8 @@ dependencies = []          # Tier 0 is stdlib-only. This is deliberate.
 embed  = ["onnxruntime>=1.17", "tokenizers>=0.15", "numpy>=1.24"]
 llama  = ["llama-cpp-python>=0.3", "numpy>=1.24"]   # GGUF embedder + reasoner
 fetch  = ["huggingface_hub>=0.20"]
-openai = ["httpx>=0.27"]
+openai = []                                        # the OpenAI-compatible Reasoner is stdlib-only (urllib); kept so old install lines still resolve
+crypto = ["cryptography>=42"]                      # encryption at rest (Owl.sealed)
 dev    = ["pytest>=8", "hypothesis>=6"]
 
 [project.scripts]

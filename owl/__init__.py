@@ -44,6 +44,7 @@ from .decisions import Cause, Impact, Status
 from .entities import Entity, Path, PathStep
 from .handover import HandoverError
 from .theory_of_mind import Divergence, Held
+from .tier2 import Tier2Config
 from .store.sqlite import SqliteStore
 from .vectors import VectorIndex
 
@@ -51,6 +52,7 @@ __all__ = [
     "Owl", "Recall", "State", "Origin", "Epistemic", "Chunk", "Provenance",
     "PartitionError", "OwlError", "Held", "Divergence", "HandoverError",
     "Entity", "Path", "PathStep", "Impact", "Cause", "Status", "Record",
+    "Tier2Config",
 ]
 __version__ = "0.1.0"
 
@@ -93,11 +95,16 @@ class Owl:
     # ── lifecycle ────────────────────────────────────────────────────
     def __init__(self, store: SqliteStore, *, embedder: Embedder | None = None,
                  reasoner: Reasoner | None = None, clock: Clock | None = None,
-                 defer_embedding: bool = False):
+                 defer_embedding: bool = False,
+                 tier2: Tier2Config | None = None):
         self._s = store
         self.defer_embedding = defer_embedding
         self.embedder = embedder
         self.reasoner = reasoner
+        # What tend() may do with the Reasoner on its own. Every switch is
+        # OFF by default: attaching a model changes nothing until the host
+        # says which disciplined passes it wants (plan Part XIV).
+        self.tier2: Tier2Config = tier2 or Tier2Config()
         self.clock: Clock = clock or SystemClock()
         self._vec = VectorIndex(store)
         self._segmenters: dict[str, Segmenter] = {}
@@ -144,7 +151,8 @@ class Owl:
     @classmethod
     def open(cls, path: str | Path, *, embedder: Embedder | None = None,
              reasoner: Reasoner | None = None, clock: Clock | None = None,
-             defer_embedding: bool = False, readonly: bool = False) -> "Owl":
+             defer_embedding: bool = False, readonly: bool = False,
+             tier2: Tier2Config | None = None) -> "Owl":
         """`readonly=True` opens without taking a lock or creating anything.
 
         F2: the store is always directly readable, and background machinery
@@ -165,7 +173,7 @@ class Owl:
         """
         return cls(SqliteStore(path, readonly=readonly), embedder=embedder,
                    reasoner=reasoner, clock=clock,
-                   defer_embedding=defer_embedding)
+                   defer_embedding=defer_embedding, tier2=tier2)
 
     def close(self) -> None:
         self._s.close()
@@ -2413,6 +2421,157 @@ class Owl:
                         "fidelity": p.fidelity, "reason": p.reason})
         return out
 
+    # ── Tier 2 under discipline (plan Part XIV) ──────────────────────
+    def _need_reasoner(self, what: str) -> None:
+        if self.reasoner is None:
+            raise OwlError(f"{what} needs a Reasoner; none is attached "
+                           "(see owl.adapters.openai_http / llama_reasoner)")
+        if self._s.readonly:
+            raise OwlError(f"{what} writes, and this store is read-only")
+
+    def reason_decontext(self, node_id: str) -> dict:
+        """B2, Tier 2 half: rewrite one observation to stand alone.
+
+        Three outcomes, never a fourth. Verified and agreed: a `decontext`
+        node, with the cited sources as its parents. Agreed but a name,
+        number or quote failed the citation check: a quarantined hypothesis
+        only. No majority across samples: nothing, and the disagreement is
+        recorded. The observation itself is never touched.
+
+        Runs whatever `tier2.decontext` says -- calling it is the opt-in.
+        """
+        from . import tier2 as t2
+        self._need_reasoner("reason_decontext")
+        budget = t2.Budget(calls=self.tier2.samples)
+        try:
+            return t2.decontextualise(self, node_id, self.tier2, budget)
+        except t2.Unfinished as e:
+            return {"node": node_id, "outcome": "deferred", "reason": str(e)}
+
+    def propose_resolutions(self, *, partition: str = "default",
+                            limit: int = 10) -> list[dict]:
+        """Ask the model about recorded conflicts. PROPOSALS only.
+
+        A blocked supersession is stored as a `conflict` node; this asks
+        which side the two records support and files the answer, with its
+        citations and agreement, in `resolutions()`. No belief changes until
+        `accept_resolution()` -- which applies the same authority rules a
+        human write would face.
+        """
+        from . import tier2 as t2
+        self._need_reasoner("propose_resolutions")
+        budget = t2.Budget(calls=self.tier2.max_calls_per_pass)
+        out = []
+        for cid in t2.resolution_candidates(self, partition, limit):
+            try:
+                out.append(t2.propose_resolution(self, cid, self.tier2,
+                                                 budget))
+            except t2.Unfinished:
+                break
+        return out
+
+    def resolutions(self, *, status: str | None = "pending",
+                    partition: str = "default") -> list[dict]:
+        """Conflict-resolution proposals, newest first."""
+        sql = "SELECT * FROM resolution_proposal WHERE partition=?"
+        args: list[Any] = [partition]
+        if status:
+            sql += " AND status=?"
+            args.append(status)
+        try:
+            rows = self._s.query(sql + " ORDER BY id DESC", tuple(args))
+        except sqlite3.OperationalError:     # pre-Tier-2 store, read-only
+            return []
+        out = []
+        for r in rows:
+            d = dict(r)
+            d["citations"] = json.loads(d.get("citations") or "[]")
+            out.append(d)
+        return out
+
+    def accept_resolution(self, proposal_id: int, *, by: str = "user") -> dict:
+        """Act on a proposal, under supersession authority. See tier2."""
+        from . import tier2 as t2
+        if self._s.readonly:
+            raise OwlError("accept_resolution writes; store is read-only")
+        return t2.accept_resolution(self, proposal_id, by=by)
+
+    def reject_resolution(self, proposal_id: int, *, by: str = "user",
+                          reason: str = "") -> dict:
+        from . import tier2 as t2
+        p = self._s.one("SELECT status FROM resolution_proposal WHERE id=?",
+                        (proposal_id,))
+        if p is None:
+            raise OwlError(f"no resolution proposal #{proposal_id}")
+        if p["status"] != "pending":
+            raise OwlError(f"proposal #{proposal_id} is already {p['status']}")
+        t2._set_status(self, proposal_id, "rejected", by,
+                       reason or "rejected", self.clock.now())
+        return {"proposal": proposal_id, "status": "rejected"}
+
+    def compress(self, *, partition: str = "default", mode: str = "report",
+                 limit: int = 8) -> dict:
+        """C1 under T3: prove, and optionally spend, reconstructive compression.
+
+        `report` runs the fill-in-the-blank test on up to `limit` cold/warm
+        memories and records the proof (or the failure) without changing
+        any belief. `apply` does the same and then spends every proof on
+        file: the cue becomes a `summary` node and the original is demoted
+        in ranking (`suppress` semantics -- reversible, still addressable).
+        The original observation is never altered.
+        """
+        from . import tier2 as t2
+        if mode not in ("report", "apply"):
+            raise ValueError("mode must be 'report' or 'apply'")
+        self._need_reasoner("compress")
+        budget = t2.Budget(calls=self.tier2.max_calls_per_pass)
+        results = []
+        for nid in t2.compression_candidates(self, partition, self.tier2,
+                                             limit):
+            try:
+                results.append(t2.prove_compression(self, nid, self.tier2,
+                                                    budget))
+            except t2.Unfinished:
+                break
+        applied = []
+        if mode == "apply":
+            for r in self._s.query(
+                    "SELECT node_id FROM compression WHERE partition=? AND "
+                    "status='proven'", (partition,)):
+                applied.append(t2.apply_compression(self, r["node_id"]))
+        return {"mode": mode, "proved": results, "applied": applied,
+                "budget": budget.as_dict()}
+
+    def compressions(self, *, partition: str = "default",
+                     status: str | None = None) -> list[dict]:
+        sql = "SELECT * FROM compression WHERE partition=?"
+        args: list[Any] = [partition]
+        if status:
+            sql += " AND status=?"
+            args.append(status)
+        try:
+            rows = self._s.query(sql, tuple(args))
+        except sqlite3.OperationalError:
+            return []
+        return [dict(r, fidelity=json.loads(r["fidelity"] or "[]"))
+                for r in rows]
+
+    def reasoner_runs(self, *, task: str | None = None,
+                      limit: int = 50) -> list[dict]:
+        """Every Tier 2 model run, newest first: which model, how many
+        samples agreed, how many citations held, and what was written."""
+        sql = "SELECT * FROM reasoner_run"
+        args: list[Any] = []
+        if task:
+            sql += " WHERE task=?"
+            args.append(task)
+        try:
+            rows = self._s.query(sql + " ORDER BY id DESC LIMIT ?",
+                                 (*args, limit))
+        except sqlite3.OperationalError:
+            return []
+        return [dict(r, detail=json.loads(r["detail"] or "{}")) for r in rows]
+
     # ── A7: second-order uncertainty ─────────────────────────────────
     def opinion(self, node_id: str, *, partition: str = "default") -> dict:
         """Belief / disbelief / IGNORANCE for one claim.
@@ -2467,6 +2626,13 @@ class Owl:
         cred_w = {1: 1.0, 2: 0.9, 3: 0.75, 4: 0.55, 5: 0.3,
                   6: 0.6}.get(int(cred or 6), 0.6)
         o = op.discount(max(0.0, min(1.0, (rel_w + cred_w) / 2)), base)
+        # T2: a conclusion the model reached 2 times in 3 is weaker than one
+        # it reached 3 in 3, and the difference is IGNORANCE -- the model
+        # disagreeing with itself says nothing about the opposite being true.
+        from . import tier2 as t2
+        agreement = t2.agreement_for(self, node_id)
+        if agreement is not None:
+            o = op.discount(agreement, o)
 
         out = o.as_dict()
         out.update({"node_id": node_id, "supporting_weight": round(support, 3),
@@ -2474,6 +2640,8 @@ class Owl:
                     "scalar_confidence": row["confidence"],
                     "note": "expectation reproduces the scalar; uncertainty "
                             "is what the scalar could never say"})
+        if agreement is not None:
+            out["model_agreement"] = round(agreement, 3)
         return out
 
     def challenge(self, query: str, *, partition: str = "default",
@@ -3133,14 +3301,27 @@ class Owl:
     # ── MAINTAIN ─────────────────────────────────────────────────────
     def tend(self, *, budget_seconds: float | None = None,
              partition: str = "default") -> dict:
-        """One deterministic maintenance pass. Tier 0 -- no model required.
+        """One maintenance pass. The Tier 0 part needs no model.
 
-        Runs: tier transitions (decay), duplicate merge, interference detection,
-        retrieval-induced-forgetting demotion, expired intentions.
-        Tier 2 additionally runs reconstructive compression; without a Reasoner
-        that pass is SKIPPED and reported, never silently no-opped.
+        Tier 0 always runs: tier transitions (decay), interference
+        detection, fusion, deterministic decontextualisation, hubness,
+        criticality, impacts, expired intentions.
+
+        Tier 2 passes run ONLY when a Reasoner is attached AND the matching
+        `self.tier2` switch is on (all are off by default): `decontext`,
+        `resolutions` (proposals only), `compression` ("report" proves,
+        "apply" also spends proofs). Every pass that did not run is listed
+        in `report["skipped"]` with the reason -- "off", or "no Reasoner
+        configured" when the switch is on but nothing is attached.
+        `report["tier2"]` says what each pass did.
+
+        `budget_seconds` bounds the Tier 2 passes (Tier 0 is fast and always
+        completes); together with `tier2.max_calls_per_pass` it stops model
+        work mid-pass, and the unfinished items are reported as deferred and
+        picked up by the next call.
         """
         t0 = time.perf_counter()
+        t0_mono = time.monotonic()
         now = self.clock.now()
         report = {"partition": partition, "tier": self.tier, "skipped": []}
 
@@ -3206,9 +3387,22 @@ class Owl:
             (now,)).rowcount)
         report["intentions_expired"] = expired
 
-        if self.reasoner is None:
-            report["skipped"].append(
-                "reconstructive_compression (no Reasoner configured)")
+        from . import tier2 as t2
+        budget = t2.Budget.from_seconds(
+            budget_seconds, calls=self.tier2.max_calls_per_pass,
+            started=t0_mono)
+        try:
+            t2r = t2.run_passes(self, partition=partition, budget=budget)
+        except Exception as exc:                              # noqa: BLE001
+            # A fault in model-driven maintenance must not cost the
+            # deterministic report above it. Logged with the traceback,
+            # reported in a sentence.
+            t2._log_crash(exc)
+            msg = (f"tier2 (crashed: {exc.__class__.__name__}: {exc}; "
+                   "see the owl.tier2 log)")
+            t2r = {"skipped": [msg]}
+        report["skipped"].extend(t2r.pop("skipped", []))
+        report["tier2"] = t2r
         if not self._semantic:
             report["skipped"].append(
                 "semantic_interference (no semantic Embedder; using lexical "
@@ -3449,6 +3643,11 @@ class Owl:
         out["open_impacts"] = self._scalar(
             "SELECT COUNT(*) FROM decision_impact WHERE acknowledged_at IS NULL")
         out["self_audit"] = self.self_audit()["clean"]
+        from . import tier2 as t2
+        out["tier2"] = {"reasoner": getattr(self.reasoner, "name", None)
+                        if self.reasoner is not None else None,
+                        "config": self.tier2.as_dict(),
+                        "runs": t2.run_stats(self)}
         out["healthy"] = not out["problems"]
         return out
 
