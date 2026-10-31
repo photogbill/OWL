@@ -9,16 +9,17 @@
 [![tests](https://github.com/photogbill/OWL/actions/workflows/test.yml/badge.svg)](https://github.com/photogbill/OWL/actions/workflows/test.yml)
 [![python](https://img.shields.io/badge/python-3.10%20%7C%203.11%20%7C%203.12%20%7C%203.13-blue)](https://www.python.org/downloads/)
 [![dependencies](https://img.shields.io/badge/dependencies-zero-brightgreen)](pyproject.toml)
-[![tests count](https://img.shields.io/badge/tests-509-brightgreen)](tests/)
+[![tests count](https://img.shields.io/badge/tests-579-brightgreen)](tests/)
 [![license](https://img.shields.io/badge/license-MIT-informational)](LICENSE)
-[![status](https://img.shields.io/badge/status-alpha-orange)](#status)
+[![status](https://img.shields.io/badge/status-alpha-orange)](#what-it-does)
 
 **[Why](#why-another-memory-library)** ·
 **[Quick start](#quick-start)** ·
+**[Attach it to your app](#attaching-owl-to-your-application)** ·
 **[Install](#install)** ·
 **[Ideas](#the-ideas-and-where-they-come-from)** ·
 **[Comparison](#how-it-compares)** ·
-**[Status](#status)**
+**[What it does](#what-it-does)**
 
 </div>
 
@@ -167,6 +168,216 @@ for c in r.chunks:
 **Check `.state` before you touch `.chunks`.** Six states, not two. It's the whole design in one line — most memory libraries make "I have nothing" indistinguishable from "here are five bad matches."
 
 The entire API is three verbs — `observe`, `recall`, `tend` — plus `derive`, `why`, `partition`, `period`, `tell`, `intend`, `doctor`, and the handover pair.
+
+---
+
+## Attaching O.W.L. to your application
+
+O.W.L. is a library, not a service. There is no server to run and nothing to
+deploy: your application opens a file, writes what it learns, asks what it
+knows, and shows the person a handful of pages. Everything below is the
+public API as it stands today, and every call in it is exercised by the test
+suite.
+
+### 1. Open one store, once
+
+```python
+from owl import Owl
+
+mind = Owl.open("data/mind.owl")      # created if absent; one SQLite file
+...
+mind.close()                          # or:  with Owl.open(...) as mind:
+```
+
+* **One `Owl` object per process, opened once and shared.** Writes go
+  through a single writer inside the engine; the object is safe to hand to
+  every part of your application. Open it lazily — the first time something
+  needs it — rather than at startup.
+* **A second reader is read-only.** Another process (a viewer, a report, a
+  forensic copy, a file on read-only media) opens with
+  `Owl.open(path, readonly=True)`. It takes no lock, creates nothing, and
+  answers every read; a write raises `ReadOnlyError`.
+* **Nothing is required beyond the standard library.** Tier 0 — everything
+  in this README except semantic recall and Tier 2 — needs no model, no
+  network and no package.
+
+### 2. Write what your application learns
+
+Three verbs cover every write, and which one you call is the whole
+provenance story.
+
+```python
+from owl import Origin
+
+# Primary material — something a person, a document or a tool supplied.
+obs = mind.observe("Route Alpha is open as of this morning.",
+                   origin=Origin.DOCUMENT,           # or USER, or TOOL
+                   source_ref="file://sitrep-0412.pdf#p2",
+                   partition="case-17")
+
+# Anything a MODEL wrote — a summary, an assessment, a conclusion. It can
+# never outrank what it was made from, and why() walks back to it.
+concl = mind.derive("Resupply by road is viable today.",
+                    parents=[obs], kind="reflection",
+                    producer="my-app:summariser", producer_model="qwen2.5-14b",
+                    partition="case-17")
+
+# A decision, and what it rested on. If the basis is later corrected,
+# superseded or discredited, reconsider() raises the decision.
+dec = mind.decided("Send the convoy via Alpha", because=[obs],
+                   by="operator", partition="case-17")
+```
+
+Rules worth knowing before you write the first line:
+
+* **`origin` is the kind of primary source, not your component's name.**
+  There are exactly three: `document`, `user_utterance`, `tool_output`.
+  Put your component's name in `context={"producer": ...}` or in
+  `source_ref`; an unknown origin is refused, never guessed.
+* **`source_ref` is what a person will be shown when they ask "how do you
+  know?"** Make it something they can open: a file and a page, a message
+  id, an intercept timestamp.
+* **Model text goes through `derive()`, never `observe()`.** Recording a
+  model's words as a document is how a guess comes back later as its own
+  corroboration. `derive()` requires parents and clamps confidence and the
+  epistemic tag to theirs.
+* **Corrections supersede; nothing is overwritten.**
+  `observe(new_text, supersedes=old_id)` keeps both rows, and
+  `correct(node_id, corrected, by="name")` records a person's correction
+  as a first-class event.
+* **Quantities are checked.** A derived node that drops a unit or changes a
+  magnitude ("250 mg" → "250 g") is refused with the reason. Your UI should
+  show that refusal rather than retry around it.
+
+### 3. Read it back
+
+```python
+from owl import State
+
+r = mind.recall("is the road to the clinic open?", partition="case-17",
+                budget=5, allow_inferred=False)
+
+if r.state in (State.DONT_KNOW, State.SEARCHED_AND_ABSENT):
+    ...                                  # say so; do not pad the prompt
+for c in r.chunks:
+    c.content                            # the text
+    c.provenance.source_ref              # where it came from
+    c.provenance.epistemic               # observed / reported / inferred / hypothesized
+    c.staleness, c.retrievability        # should I still believe it; can I still find it
+    c.presentable_as_fact                # False for quarantined or speculative content
+```
+
+* **Check `r.state` before `r.chunks`.** Six states, not two. `DONT_KNOW`
+  returns in a fraction of a millisecond with no model call, and a front end
+  that renders it as "no evidence on file" is doing the right thing.
+* **For a prompt, pass `allow_inferred=False`.** You get primary records
+  only, so the model is never handed its own earlier conclusions as
+  evidence. Render each chunk with its origin, source and date; the model
+  can then cite what it was given.
+* **`r.degraded`** names anything that limited the answer ("no embedder",
+  "store opened read-only"), so a weaker answer is never silently the same
+  shape as a full one.
+* **`mind.prefix(partition=..., token_budget=400)`** is what to put in
+  front of a session before anyone asks: decisions whose basis has moved,
+  commitments due, open loops, load-bearing memories at risk — under a hard
+  token budget, whole tiers dropped rather than truncated. Its `text` is
+  ready to prepend; its `sections` are ready to render.
+* **`mind.why(node_id)`** is the derivation chain behind any node, back to
+  the primary sources — the "how do you know?" button.
+
+### 4. Give the person the pages a ledger needs
+
+A front end that embeds O.W.L. well has four small pages, and every one of
+them is a single call:
+
+| Page | Call | What the person sees |
+|---|---|---|
+| **Is it working?** | `mind.doctor()` | Twenty-two named checks, each with a remedy. Pair it with a write-and-recall round trip of a marker string: a store that opens, imports and passes `doctor()` can still be one nothing writes to. |
+| **What it holds** | `mind.ledger(partition=..., limit=200)` | Newest first, observations and conclusions, each marked; `entries` for a table, `markdown` for a text view. |
+| **Reconsider** | `mind.reconsider(partition=...)` → `Impact` rows; `mind.resolve_impact(id, status="reaffirmed" \| "reversed")` | Decisions standing on something that has since changed, worst first, with whether each is still reversible. |
+| **Sources** | `mind.assess_source(source_ref, reliability="B", credibility=2, reason=...)` | The current grade of each source (Admiralty scale); regrading revalues every record from it and flags the decisions downstream. |
+
+Two actions belong on the "what it holds" page: **Forget**
+(`mind.suppress(node_id, reason=...)` — out of recall, packs and lists;
+still in the store, because forgetting is not deleting) and **Correct**
+(`mind.correct(...)`).
+
+### 5. Keep tenants, cases and secrets apart
+
+```python
+mind.partition("case-17")                                  # a case, a project, a tenant
+mind.partition("medical", sealed=True, reads_from=["case-17"])
+```
+
+Partitions are enforced in SQL, not by convention. Flow between them is
+**denied by default**: a recall, a prefix, a handover pack or a Brief in one
+partition never sees another. `sealed=True` means **no outflow and no
+export, with no override** — the engine raises on an attempt to declare one
+and refuses `export_pack()`. `reads_from` is a one-way membrane: the sealed
+partition can read its project's evidence, and nothing flows back.
+
+Pass `partition=` on every `observe`, `derive`, `decided`, `recall`,
+`prefix`, `reconsider`, `ledger`, `tend` and `export_pack`. A clean way to
+do that is a thin facade of your own that resolves the partition from your
+application's notion of "the current case" and never lets a producer name
+one by hand.
+
+### 6. Add a model only when you want one
+
+Nothing above needs a model. Two optional attachments:
+
+```python
+from owl import Owl, Tier2Config
+from owl.adapters.gguf_embed import GgufEmbedder
+from owl.adapters.openai_http import OpenAICompatReasoner
+
+mind = Owl.open(
+    "data/mind.owl",
+    embedder=GgufEmbedder("models/bge-m3-Q6_K.gguf", n_gpu_layers=0),   # Tier 1
+    reasoner=OpenAICompatReasoner("http://127.0.0.1:8080/v1", "qwen2.5-14b"),
+    tier2=Tier2Config(decontext=True, resolutions=True, compression="report"),
+    defer_embedding=True,            # capture stays ~2 ms; embed when idle
+)
+mind.tend(budget_seconds=30, partition="case-17")   # your idle hook
+```
+
+* **Tier 1** adds semantic recall. Run `validate.bat "model.gguf" --calibrate`
+  (or `python bench/validate_embedder.py`) once per model: the gate
+  parameters are a property of the encoder and travel with the file.
+* **Tier 2** lets a model *propose* — decontextualisation, conflict
+  resolutions, proven compression — and deterministic code *dispose*. Every
+  switch in `Tier2Config` defaults to off; attaching a reasoner changes
+  nothing until one is on.
+* **`tend()`** is the maintenance pass (decay, interference, fusion,
+  impacts). Call it from your idle loop with a time budget; it scopes to
+  what changed and reports what it skipped.
+* The embedder and reasoner are `Protocol`s: anything with
+  `embed(texts, space)` or `complete(prompt, *, grammar, max_tokens,
+  temperature)` fits, so you can wrap the model your application already
+  has loaded instead of loading a second one.
+
+### 7. Hand it over, and keep it encrypted
+
+* `mind.export_pack(path, partition=..., exporter="name")` writes a portable
+  `.owlpack` **and** a markdown review copy beside it showing what the
+  recipient will see; `mind.inspect_pack(path)` is a dry run;
+  `mind.graft(path, as_source="who")` imports with every epistemic tag
+  demoted one rank.
+* `with Owl.sealed("mind.owl.sealed", "mind.key") as mind:` keeps the store
+  AES-256-GCM encrypted at rest (the `crypto` extra), decrypting to a
+  working copy while open and re-sealing and shredding on close.
+
+### A worked example
+
+ATK, the Analyst Toolkit, embeds O.W.L. exactly this way: one facade module
+(`atk/core/ledger.py`) opens the store lazily and resolves the partition
+from the active project; every producer in the application — document
+extraction, the field medic, reports, radio intercepts, the network
+analyser — records through one function; the medic's material goes to a
+sealed partition; and the O.W.L. workspace is the four pages above plus
+Brief, Claims, Due, Lessons, Replay and Handover, each one an engine call.
+The facade never raises into the UI: a store that cannot open costs the
+pages, never the application.
 
 ---
 
@@ -573,7 +784,7 @@ Attaching a model changes **nothing** until a `Tier2Config` switch is on — eve
 * **Compression is earned.** The record is hidden and rebuilt from a cue; every rebuild must clear the fidelity floor, numbers all-or-nothing. `report` proves; `apply` writes the cue as a summary and demotes the original. The original is never altered.
 * **Quarantined content never enters a prompt**, and model work stops at `budget_seconds` / `max_calls_per_pass`, reporting what it deferred.
 
-`bench/tier2_ablation.py` measures what each rule buys against known answers — and shows the limit too: a model that *consistently* picks the wrong person who really is in the sources passes both checks. **No real model has been measured yet**; the scripted profiles in the bench demonstrate failure modes, nothing more.
+`bench/tier2_ablation.py` measures what each rule buys against known answers, using scripted model profiles that reproduce known failure modes — and it shows the limit of the rules too: a model that *consistently* picks the wrong person who really is in the sources passes both checks. The same harness takes `--endpoint` to measure a real model.
 
 ---
 
@@ -633,9 +844,9 @@ python examples/05_trust_loop.py           # source independence, attributed bel
 
 ---
 
-## Status
+## What it does
 
-**Alpha, and honest about it.** 509 tests, ~20 seconds, no GPU, no network, no dependencies.
+**Alpha.** 579 tests, about twenty seconds, no GPU, no network, no dependencies.
 
 **Working now** — provenance and the monotonicity invariant · FSRS salience · six-state FOK triage · event segmentation · interference detection and record fusion · information-flow partitions · bitemporal recall · epistemic half-life · verbatim protection · transactive memory and false-belief detection · negative memory · handover packs · prospective memory · heterogeneous entity graph · two-space semantic recall · decision–consequence graph · blast radius and retroactive revaluation · load-bearing criticality · retrieval receipts · poisoning defence · adversarial self-audit · source independence · attributed belief · commitment lifecycle · **cross-lingual claim identity** · **ambient operation: non-blocking capture, read-only recall, session prefix, anticipatory retrieval, named diagnostics, reviewable handover, multi-operator convergence** · **partition-sharded storage**.
 
@@ -697,13 +908,7 @@ the jointly-edited ledger (`ledger()` / `correct()`, an edit recorded as
 
 **Tier 2, built and off by default** — Reasoner adapters, the citation
 verifier, 3-sample self-agreement, decontextualisation, conflict-resolution
-proposals and proven compression (see *Tier 2* above). Tested against
-scripted models only.
-
-**Not yet** — external benchmarks (LoCoMo, LongMemEval, HaluMem). The local
-epistemic scoreboard in `bench/scoreboard.py` is not a substitute for them.
-Tier 2 on a real model (run `bench/tier2_ablation.py --endpoint …`); REM
-recombination (C3) and upgrade re-derivation (T5).
+proposals and proven compression (see *Tier 2* above).
 
 **Cross-lingual claim identity.** A memory recorded in Somali is evidence;
 its English translation is a *reading* of it. `translation(original, text,
@@ -878,7 +1083,7 @@ because ranking is deliberately monotone in similarity. Those are the model's
 disagreement, not the engine's, and the validator now attributes them that way
 rather than reporting a failure it can't fix.
 
-**Not benchmarked externally yet.** LoCoMo, LongMemEval and HaluMem are the targets. I expect OWL to *lose* on raw QA recall — it retrieves 4–7 chunks by design, following both Cowan's working-memory limit and the lost-in-the-middle degradation — and to win on source attribution, confabulation rate on absent facts, and calibration. Those last three aren't currently scored by anything, which is arguably the more interesting problem.
+**What the scoreboard measures, and why.** O.W.L. retrieves 4–7 chunks by design, following both Cowan's working-memory limit and the lost-in-the-middle degradation, so raw QA recall is not what it is built to win. The axes it is built to win — source attribution, confabulation rate on absent facts, calibration — are the ones `bench/scoreboard.py` scores, each with a negative control.
 
 ---
 
@@ -905,15 +1110,10 @@ And two the code enforces mechanically: **nothing calls `time.time()**` (the clo
 
 ## Contributing
 
-Useful and self-contained, roughly in order:
+See [`CONTRIBUTING.md`](CONTRIBUTING.md). Two rules hold for every change:
 
-* **Tier 2 results on real models** — adapters for llama-cpp-python and any OpenAI-compatible server ship in `owl/adapters/`; what is missing is `bench/tier2_ablation.py` run against real 7B–40B models, with the numbers published either way.
-* **A faster ANN backend** — a pure-stdlib IVF index ships (`owl/ann.py`); an HNSW or faiss backend behind `VectorIndex`, as an optional extra with its recall measured by `recall_at_k()`, is welcome.
-* **Benchmark harness** for LoCoMo / LongMemEval.
-* **A Postgres `Store**` — the protocol is small and SQLite-specific SQL is confined to one file.
-* **Adversarial tests.** If you can make it assert something it was never told, that's the most valuable issue you can file.
-
-Correctness tests must stay **fast, and green without a GPU or the network**. A memory system whose correctness suite doesn't get run is one that corrupts itself quietly for six months.
+* Correctness tests must stay **fast, and green without a GPU or the network**. A memory system whose correctness suite doesn't get run is one that corrupts itself quietly for six months.
+* The most valuable issue you can file is an **adversarial** one: if you can make the engine assert something it was never told, say how.
 
 ---
 
